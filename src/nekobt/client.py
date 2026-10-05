@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Mapping, Optional
 
 import requests
 
+from ..net import build_session
+
 MEDIA_SEARCH_PATH = "/api/v1/media/search"
 MEDIA_DETAIL_PATH = "/api/v1/media/{media_id}"
 TORRENT_SEARCH_PATH = "/api/v1/torrents/search"
@@ -63,6 +65,20 @@ def _clean_params(params: Mapping[str, Any]) -> Dict[str, Any]:
     return cleaned
 
 
+def _describe_error(exc: Exception) -> str:
+    """把底层异常翻译成能直接行动的提示。"""
+    text = str(exc)
+    lowered = text.lower()
+    if "doesn't match" in lowered or "certificateerror" in lowered or "certificate verify failed" in lowered:
+        return (
+            "TLS 证书与主机名不匹配，通常意味着 DNS 被污染（域名解析到了错误的 IP）。\n"
+            "  排查：curl -sS -o NUL -w \"%{remote_ip}\" https://nekobt.to/\n"
+            "  如果 IPv6 正常、IPv4 不对，就是 A 记录被污染；客户端已默认 IPv6 优先。\n"
+            f"  原始错误：{text}"
+        )
+    return text
+
+
 class NekoBTClient:
     def __init__(
         self,
@@ -77,7 +93,7 @@ class NekoBTClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self.session = session if session is not None else requests.Session()
+        self.session = session if session is not None else build_session()
         self.timeout = timeout
         self.retries = max(1, retries)
         self.user_agent = user_agent
@@ -147,7 +163,7 @@ class NekoBTClient:
                 return response
             return response.json()
 
-        raise NekoBTError(f"nekoBT 请求失败：{last_error}", url=url)
+        raise NekoBTError(f"nekoBT 请求失败：{_describe_error(last_error)}", url=url)
 
     @staticmethod
     def _retry_after(response: Any, *, default: float) -> float:

@@ -143,6 +143,7 @@ tests/                      57 个离线用例
 8. **本机 pytest 会被 anyio 插件卡死**（anyio 3.5 + pytest 7.1.2 不兼容），`pytest.ini` 里已用 `-p no:anyio` 禁掉。
 9. **8080 端口被 NI Application Web Server 占用**，它对 `/api/v2/*` 一律返回 404，所以 qBittorrent WebUI 改用了 8081。
 10. **qBittorrent 的暂停/恢复接口名随版本变化**：4.6 只有 `pause`/`resume`，5.0+ 才是 `stop`/`start`；客户端做的是「新名优先、404 回退」。
+11. **`nekobt.to` 的 A 记录可能被 DNS 污染**（实测被指向 `45.67.223.32`，该地址出具的证书不匹配主机名，报 `CertificateError: hostname ... doesn't match ...`），同一时刻 AAAA 记录正常。客户端已默认 **IPv6 优先**（`src/net.py`），主机名仍用于 SNI 与证书校验，安全性不变；连不上 IPv6 时自动回落到 IPv4。顺带一提，开启 VPN 后更容易触发这个现象——如果报这个错，先检查 VPN 的 DNS 设置。
 
 ## 待办
 

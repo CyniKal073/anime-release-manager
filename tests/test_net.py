@@ -1,0 +1,101 @@
+"""连接层：IPv6 优先的地址选择。"""
+
+from __future__ import annotations
+
+import socket
+
+import pytest
+
+from src.net import IPv6FirstAdapter, IPv6FirstHTTPSConnection, build_session
+
+
+def test_build_session_mounts_ipv6_first_adapter():
+    session = build_session()
+    adapter = session.get_adapter("https://nekobt.to")
+    assert isinstance(adapter, IPv6FirstAdapter)
+    # HTTP 不走这个适配器
+    assert not isinstance(session.get_adapter("http://example.com"), IPv6FirstAdapter)
+
+
+def test_connection_tries_ipv6_before_ipv4(monkeypatch):
+    """DNS 把被污染的 IPv4 排在前面时，客户端应当先连 IPv6。"""
+    attempted = []
+
+    class FakeSock:
+        def __init__(self, family, *_args):
+            self.family = family
+
+        def setsockopt(self, *_args):
+            pass
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, address):
+            attempted.append((self.family, address[0]))
+
+        def close(self):
+            pass
+
+    fake_infos = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("45.67.223.32", 443)),
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:4700:3030::6815:258c", 443, 0, 0)),
+    ]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: fake_infos)
+    monkeypatch.setattr(socket, "socket", lambda family, *_args: FakeSock(family))
+
+    conn = IPv6FirstHTTPSConnection("nekobt.to", 443)
+    conn._new_conn()
+
+    assert attempted, "应当尝试连接"
+    assert attempted[0][0] == socket.AF_INET6
+    assert attempted[0][1] == "2606:4700:3030::6815:258c"
+
+
+def test_connection_falls_back_to_ipv4_when_ipv6_fails(monkeypatch):
+    attempted = []
+
+    class FlakySock:
+        def __init__(self, family, *_args):
+            self.family = family
+
+        def setsockopt(self, *_args):
+            pass
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, address):
+            attempted.append((self.family, address[0]))
+            if self.family == socket.AF_INET6:
+                raise OSError("network unreachable")
+
+        def close(self):
+            pass
+
+    fake_infos = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("45.67.223.32", 443)),
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:4700:3030::6815:258c", 443, 0, 0)),
+    ]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: fake_infos)
+    monkeypatch.setattr(socket, "socket", lambda family, *_args: FlakySock(family))
+
+    conn = IPv6FirstHTTPSConnection("nekobt.to", 443)
+    conn._new_conn()
+
+    assert [item[0] for item in attempted] == [socket.AF_INET6, socket.AF_INET]
+
+
+def test_ssl_error_message_is_actionable():
+    from src.nekobt.client import NekoBTError, _describe_error
+
+    exc = Exception(
+        "HTTPSConnectionPool(host='nekobt.to', port=443): "
+        "SSLError(CertificateError(\"hostname 'nekobt.to' doesn't match '45.67.223.32'\"))"
+    )
+    message = _describe_error(exc)
+    assert "DNS" in message
+    assert "remote_ip" in message
+
+    assert _describe_error(ValueError("boom")) == "boom"
+    assert NekoBTError is not None
