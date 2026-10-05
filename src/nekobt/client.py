@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
+import re
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -249,9 +251,19 @@ class NekoBTClient:
     def _filename_from(response: Any, torrent_id: str) -> str:
         headers = getattr(response, "headers", {}) or {}
         disposition = headers.get("Content-Disposition") if hasattr(headers, "get") else None
-        if disposition and "filename=" in disposition:
-            raw = disposition.split("filename=", 1)[1].strip().strip('"')
-            raw = raw.replace("%5B", "[").replace("%5D", "]").replace("%20", " ")
-            if raw.lower().endswith(".torrent"):
-                return raw
+        if disposition:
+            # 优先 RFC 5987 的 filename*=UTF-8''...（nekoBT 实际用的就是这种）
+            match = re.search(r"filename\*\s*=\s*UTF-8''([^;]+)", disposition, re.IGNORECASE)
+            if match:
+                name = urllib.parse.unquote(match.group(1).strip())
+                if name.lower().endswith(".torrent"):
+                    return name
+            # 退回普通 filename="..." / filename=...
+            match = re.search(r'filename\s*=\s*"([^"]*)"', disposition, re.IGNORECASE)
+            if not match:
+                match = re.search(r"filename\s*=\s*([^;]+)", disposition, re.IGNORECASE)
+            if match:
+                name = urllib.parse.unquote(match.group(1).strip().strip('"'))
+                if name.lower().endswith(".torrent"):
+                    return name
         return f"{torrent_id}.torrent"

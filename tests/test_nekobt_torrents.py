@@ -74,3 +74,61 @@ def test_429_is_retried_then_succeeds():
 
     assert calls["n"] == 2
     assert page.results == []
+
+
+def test_torrent_filename_prefers_rfc5987_field():
+    """nekoBT 同时返回 filename= 和 filename*=，解析时不能把整段响应头吃进去。"""
+    disposition = (
+        'attachment; filename="%5BGroup%5D%20Frieren%20-%2001.torrent"; '
+        "filename*=UTF-8''%5BGroup%5D%20Frieren%20-%2001.torrent"
+    )
+
+    def handler(method, url, **kwargs):
+        return FakeResponse(
+            content=b"d4:infod4:name4:teste",
+            headers={"Content-Disposition": disposition},
+        )
+
+    session = FakeSession(handler)
+    client = NekoBTClient(session=session, retries=1)
+    content, filename = client.download_torrent("123")
+
+    assert content.startswith(b"d")
+    assert filename == "[Group] Frieren - 01.torrent"
+    assert "filename*=" not in filename
+
+
+def test_torrent_filename_falls_back_to_plain_filename():
+    def handler(method, url, **kwargs):
+        return FakeResponse(
+            content=b"d4:infod4:name4:teste",
+            headers={"Content-Disposition": 'attachment; filename="plain.torrent"'},
+        )
+
+    session = FakeSession(handler)
+    client = NekoBTClient(session=session, retries=1)
+    _content, filename = client.download_torrent("123")
+    assert filename == "plain.torrent"
+
+
+def test_torrent_filename_defaults_when_header_missing():
+    def handler(method, url, **kwargs):
+        return FakeResponse(content=b"d4:infod4:name4:teste")
+
+    session = FakeSession(handler)
+    client = NekoBTClient(session=session, retries=1)
+    _content, filename = client.download_torrent("999")
+    assert filename == "999.torrent"
+
+
+def test_non_torrent_payload_is_rejected():
+    """拿到 HTML 错误页时不能当成 .torrent 存下来。"""
+    import pytest
+
+    def handler(method, url, **kwargs):
+        return FakeResponse(content=b"<!DOCTYPE html><html>nope</html>")
+
+    session = FakeSession(handler)
+    client = NekoBTClient(session=session, retries=1)
+    with pytest.raises(Exception):
+        client.download_torrent("123")

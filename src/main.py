@@ -23,6 +23,7 @@ from .release.matcher import (
     RankedRelease,
     ReleasePreferences,
     apply_filter,
+    default_preferences,
     rank_releases,
 )
 from .release.models import Release
@@ -91,6 +92,18 @@ def build_preferences(args: argparse.Namespace) -> ReleasePreferences:
     if getattr(args, "min_seeders", None) is not None:
         prefs.min_seeders = args.min_seeders
     return prefs
+
+
+def has_any_rule(prefs: ReleasePreferences) -> bool:
+    """用户到底有没有给筛选/排序偏好。"""
+    return bool(
+        prefs.resolutions
+        or prefs.sources
+        or prefs.video_codecs
+        or prefs.sub_langs
+        or prefs.require_batch is not None
+        or prefs.min_seeders is not None
+    )
 
 
 def fetch_releases(
@@ -212,14 +225,16 @@ def cmd_search(settings: Settings, args: argparse.Namespace) -> int:
 
     prefs = build_preferences(args)
     filtered = apply_filter(releases, prefs)
+    # 没给偏好时不筛选，但排序仍用设计文档的默认偏好（1080p / BD / HEVC / 简中）
+    rank_prefs = prefs if has_any_rule(prefs) else default_preferences()
     if filtered.matched:
-        pool = rank_releases(filtered.matched, prefs)
+        pool = rank_releases(filtered.matched, rank_prefs)
         pool_label = "符合条件"
     elif filtered.unknown:
-        pool = rank_releases(filtered.unknown, prefs)
+        pool = rank_releases(filtered.unknown, rank_prefs)
         pool_label = "没有完全符合条件的 Release；下面是「字段无法判定」的结果，供参考"
     elif filtered.excluded:
-        pool = rank_releases(filtered.excluded, prefs)
+        pool = rank_releases(filtered.excluded, rank_prefs)
         pool_label = "没有符合条件的 Release；下面是全部被排除的结果，仅供参考"
     else:
         pool = []
@@ -244,10 +259,16 @@ def cmd_search(settings: Settings, args: argparse.Namespace) -> int:
         return 0
     selected = pool[choice - 1].release
 
-    return download_release(settings, client, selected)
+    return download_release(settings, client, selected, paused=args.paused)
 
 
-def download_release(settings: Settings, client: NekoBTClient, release: Release) -> int:
+def download_release(
+    settings: Settings,
+    client: NekoBTClient,
+    release: Release,
+    *,
+    paused: bool = False,
+) -> int:
     print()
     print(f"准备下载：{release.title}")
 
@@ -278,6 +299,7 @@ def download_release(settings: Settings, client: NekoBTClient, release: Release)
             savepath=settings.qbit_savepath,
             category=settings.qbit_category,
             tags=settings.qbit_tags,
+            paused=paused,
         )
     except QBittorrentError as exc:
         print(f"提交到 qBittorrent 失败：{exc}")
@@ -291,7 +313,9 @@ def download_release(settings: Settings, client: NekoBTClient, release: Release)
         client="qbittorrent",
         status="started",
     )
-    print(f"已提交到 qBittorrent（WebAPI {version}），保存目录：{settings.qbit_savepath}")
+    state = "已暂停（不下载，可在客户端手动开始）" if paused else "已开始下载"
+    print(f"已提交到 qBittorrent（WebAPI {version}），状态：{state}")
+    print(f"保存目录：{settings.qbit_savepath}")
     return 0
 
 
@@ -312,6 +336,11 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--batch", action="store_true", help="只看合集")
     search.add_argument("--min-seeders", type=int, default=None)
     search.add_argument("--no-download", action="store_true", help="只检索不下载")
+    search.add_argument(
+        "--paused",
+        action="store_true",
+        help="提交到 qBittorrent 但保持暂停，不实际下载（用于验证链路）",
+    )
     search.add_argument("--json", action="store_true", help="输出 JSON（暂未实现交互）")
 
     sub.add_parser("doctor", help="自检 nekoBT 与 qBittorrent 连通性")
