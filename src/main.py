@@ -143,7 +143,16 @@ def cmd_doctor(settings: Settings) -> int:
                 password=settings.qbit_password,
                 timeout=settings.http_timeout,
             )
-            print(f"  WebAPI 版本：{qbit.check_connection()}")
+            version = qbit.check_connection()
+            print(f"  WebAPI 版本：{version}")
+            print(f"  应用版本：{qbit.app_version()}")
+            probe = qbit.probe_task_endpoints()
+            supported = [name for name, status in probe.items() if status == "ok"]
+            if supported:
+                print(f"  任务控制接口：{' / '.join(supported)} 可用")
+            else:
+                ok = False
+                print(f"  任务控制接口：都不可用（{probe}）")
         except QBittorrentError as exc:
             ok = False
             print(f"  失败：{exc}")

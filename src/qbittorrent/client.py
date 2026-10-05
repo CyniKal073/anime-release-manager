@@ -1,6 +1,11 @@
 """qBittorrent WebUI API（WebAPI v2）客户端。
 
-版本注意：5.0 起暂停/恢复的接口名是 ``stop`` / ``start``（旧的 ``pause`` / ``resume`` 已更名）。
+版本兼容（实测本机为 qBittorrent Enhanced Edition v5.1.0.11）：
+
+* 暂停/恢复：5.0 起改名 ``stop`` / ``start``，旧 ``pause`` / ``resume`` 已废弃。
+  这里优先用新名，404/405 时自动回退旧名，两个版本都能跑。
+* 添加任务的暂停字段：4.x / 5.0 用 ``paused``，5.1 起改为 ``stopped``。
+  服务端会忽略不认识的字段，所以两个都发，不用探测版本。
 """
 
 from __future__ import annotations
@@ -8,6 +13,13 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import requests
+
+#: 5.0+ 的接口名
+STOP_PATH = "/api/v2/torrents/stop"
+START_PATH = "/api/v2/torrents/start"
+#: 5.0 之前的接口名，作为回退
+PAUSE_PATH = "/api/v2/torrents/pause"
+RESUME_PATH = "/api/v2/torrents/resume"
 
 
 class QBittorrentError(RuntimeError):
@@ -122,7 +134,10 @@ class QBittorrentClient:
             data["category"] = category
         if tags:
             data["tags"] = tags
-        data["paused"] = "true" if paused else "false"
+        # 4.x/5.0 读 paused，5.1+ 读 stopped；多余的字段会被忽略
+        state = "true" if paused else "false"
+        data["paused"] = state
+        data["stopped"] = state
 
         files = None
         if torrent_bytes:
@@ -150,14 +165,34 @@ class QBittorrentClient:
         response = self._request("GET", "/api/v2/torrents/info", params=params)
         return response.json()
 
-    def _hashes_value(self, hashes: Sequence[str]) -> str:
-        return "|".join(hashes) if hashes else "all"
+    @staticmethod
+    def _hashes_value(hashes: Sequence[str]) -> str:
+        """注意：必须显式给出 hash。
 
-    def stop(self, hashes: Sequence[str]) -> None:
-        self._request("POST", "/api/v2/torrents/stop", data={"hashes": self._hashes_value(hashes)})
+        以前这里空列表会退化成 ``all``，那意味着一次误调用就能停掉/删掉所有任务，
+        太危险，所以直接拒绝空输入。
+        """
+        if not hashes:
+            raise ValueError("必须提供至少一个 torrent hash")
+        return "|".join(hashes)
 
-    def start(self, hashes: Sequence[str]) -> None:
-        self._request("POST", "/api/v2/torrents/start", data={"hashes": self._hashes_value(hashes)})
+    def _post_with_fallback(self, paths: Sequence[str], data: Dict[str, Any]) -> str:
+        last_error: Optional[QBittorrentError] = None
+        for path in paths:
+            try:
+                self._request("POST", path, data=data)
+                return path
+            except QBittorrentError as exc:
+                if exc.status not in (404, 405):
+                    raise
+                last_error = exc
+        raise last_error or QBittorrentError("没有可用的接口")
+
+    def stop(self, hashes: Sequence[str]) -> str:
+        return self._post_with_fallback([STOP_PATH, PAUSE_PATH], {"hashes": self._hashes_value(hashes)})
+
+    def start(self, hashes: Sequence[str]) -> str:
+        return self._post_with_fallback([START_PATH, RESUME_PATH], {"hashes": self._hashes_value(hashes)})
 
     def delete(self, hashes: Sequence[str], *, delete_files: bool = False) -> None:
         self._request(
@@ -165,3 +200,18 @@ class QBittorrentClient:
             "/api/v2/torrents/delete",
             data={"hashes": self._hashes_value(hashes), "deleteFiles": "true" if delete_files else "false"},
         )
+
+    def probe_task_endpoints(self) -> Dict[str, str]:
+        """探测服务端支持哪组接口名，用于自检。
+
+        用一个不存在的 hash 探测：qBittorrent 对未知 hash 是空操作，不会影响真实任务。
+        """
+        bogus = "0" * 40
+        result: Dict[str, str] = {}
+        for label, path in (("stop", STOP_PATH), ("pause", PAUSE_PATH)):
+            try:
+                self._request("POST", path, data={"hashes": bogus})
+                result[label] = "ok"
+            except QBittorrentError as exc:
+                result[label] = f"http {exc.status}"
+        return result

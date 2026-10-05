@@ -60,7 +60,9 @@ def test_add_torrent_uses_multipart_and_savepath():
     assert call["data"]["savepath"] == r"D:\Anime\library"
     assert call["data"]["category"] == "anime"
     assert call["data"]["tags"] == "nekobt"
+    # 4.x/5.0 读 paused，5.1+ 读 stopped，两个都要发
     assert call["data"]["paused"] == "false"
+    assert call["data"]["stopped"] == "false"
     filename, payload, content_type = call["files"]["torrents"]
     assert filename == "frieren.torrent"
     assert payload.startswith(b"d")
@@ -95,6 +97,47 @@ def test_version_endpoint_and_5_0_task_endpoints():
     client.delete(["abc"], delete_files=True)
     assert session.last["url"].endswith("/api/v2/torrents/delete")
     assert session.last["data"]["deleteFiles"] == "true"
+
+
+def test_stop_falls_back_to_legacy_pause_on_404():
+    """qBittorrent 5.0 之前的服务端只有 pause/resume。"""
+    def handler(method, url, **kwargs):
+        if url.endswith("/api/v2/auth/login"):
+            return FakeResponse(text="Ok.")
+        if url.endswith("/api/v2/torrents/stop"):
+            return FakeResponse(text="Not Found", status_code=404)
+        return FakeResponse(text="Ok.")
+
+    client, session = _client(handler)
+    used = client.stop(["abc"])
+    assert used == "/api/v2/torrents/pause"
+    assert session.last["url"].endswith("/api/v2/torrents/pause")
+
+
+def test_empty_hashes_are_rejected_instead_of_hitting_all():
+    """防空列表退化成 'all'：一次误调用就能停掉全部任务。"""
+    def handler(method, url, **kwargs):
+        return FakeResponse(text="Ok.")
+
+    client, _session = _client(handler)
+    for call in (client.stop, client.start):
+        with pytest.raises(ValueError):
+            call([])
+    with pytest.raises(ValueError):
+        client.delete([])
+
+
+def test_probe_task_endpoints_reports_both_names():
+    def handler(method, url, **kwargs):
+        if url.endswith("/api/v2/auth/login"):
+            return FakeResponse(text="Ok.")
+        if url.endswith("/api/v2/torrents/pause"):
+            return FakeResponse(text="Not Found", status_code=404)
+        return FakeResponse(text="Ok.")
+
+    client, _session = _client(handler)
+    probe = client.probe_task_endpoints()
+    assert probe == {"stop": "ok", "pause": "http 404"}
 
 
 def test_403_on_task_triggers_relogin():
