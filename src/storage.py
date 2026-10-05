@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS downloads (
     status       TEXT,
     created_at   TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -141,6 +147,29 @@ class Store:
                 "SELECT * FROM downloads ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
         return list(rows)
+
+    # ------------------------------------------------------------ settings
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (key, value, time.strftime("%Y-%m-%dT%H:%M:%S")),
+            )
+
+    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def all_settings(self) -> dict:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT key, value FROM settings").fetchall()
+        return {row["key"]: row["value"] for row in rows}
 
 
 class JsonCache:

@@ -31,6 +31,18 @@ qBittorrent WebAPI
 
 当前未验证：nekoBT 非公开种子需要 API Key 的路径；Bangumi 在当前网络不可达。
 
+## V1 本地 Web UI
+
+```powershell
+python -m src.api.app              # 默认 http://127.0.0.1:8765
+python -m src.api.app --port 9000  # 换端口
+```
+
+界面提供：搜索框、作品候选（带相似度）、筛选栏（分辨率/来源/编码/字幕/合集/最少做种）、
+排序切换、符合条件 / 字段未知 / 不符合 三态分页、逐条下载按钮（可选「添加后暂停」）、下载历史。
+
+筛选逻辑与 CLI 完全共用 `src/service.py`，唯一区别是偏好可以「存为默认偏好」写进 SQLite。
+
 ---
 
 ## 安装
@@ -96,6 +108,9 @@ python -m pytest
 ```text
 src/
 ├── main.py                 CLI 入口
+├── api/app.py              V1 Web API（FastAPI）
+├── web/                    前端（原生 HTML/CSS/JS，无构建步骤）
+├── service.py              CLI 与 Web 共用的业务编排层
 ├── config.py               .env 读取与校验
 ├── storage.py              SQLite 映射表 / 下载历史 / JSON 缓存
 ├── nekobt/
