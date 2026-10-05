@@ -1,0 +1,12 @@
+.env
+data/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.torrent
+
+# 凭证文件：只应存在于本地，绝不入库
+docs/*api-key*.txt
+*api-key*.txt
