@@ -24,13 +24,14 @@ from ..release.matcher import ReleasePreferences, default_preferences
 from ..service import (
     ServiceContext,
     build_context,
+    confirm_mapping,
     health,
     list_releases,
     load_preferences,
     preferences_from_dict,
     preferences_to_dict,
+    resolve_work,
     save_preferences,
-    search_works,
     submit_download,
 )
 
@@ -64,6 +65,14 @@ class PreferencesRequest(BaseModel):
     min_seeders: Optional[int] = None
 
 
+class MappingRequest(BaseModel):
+    input_title: str
+    media_id: str
+    anilist_id: Optional[int] = None
+    bangumi_id: Optional[int] = None
+    confidence: float = 1.0
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Anime Release Manager", version="0.2.0")
 
@@ -80,9 +89,24 @@ def create_app() -> FastAPI:
         if not title.strip():
             raise HTTPException(status_code=400, detail="title 不能为空")
         try:
-            return search_works(ctx, title, top=max(1, min(top, 20)))
+            return resolve_work(ctx, title, top=max(1, min(top, 20)))
         except NekoBTError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/api/mapping")
+    def api_confirm_mapping(
+        req: MappingRequest,
+        ctx: ServiceContext = Depends(get_context),
+    ) -> Dict[str, Any]:
+        """用户确认候选后落库，下次同一输入直接命中缓存。"""
+        return confirm_mapping(
+            ctx,
+            input_title=req.input_title,
+            media_id=req.media_id,
+            anilist_id=req.anilist_id,
+            bangumi_id=req.bangumi_id,
+            confidence=req.confidence,
+        )
 
     @app.get("/api/media/{media_id}/releases")
     def api_releases(

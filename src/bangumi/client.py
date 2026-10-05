@@ -6,6 +6,7 @@ Bangumi 不可用时主流程照常运行。
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -27,21 +28,36 @@ class BangumiClient:
         user_agent: str = "anime-release-manager/0.1 (https://github.com/)",
         session: Optional[Any] = None,
         timeout: float = 8.0,
+        availability_ttl: float = 60.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.user_agent = user_agent
         self.session = session if session is not None else requests.Session()
         self.timeout = timeout
+        self.availability_ttl = availability_ttl
+        self._available: Optional[bool] = None
+        self._checked_at = 0.0
 
     def _headers(self) -> Dict[str, str]:
         return {"User-Agent": self.user_agent, "Accept": "application/json"}
 
-    def is_available(self) -> bool:
+    def is_available(self, *, refresh: bool = False) -> bool:
+        """带 TTL 的可用性判断，避免每次搜索都去探一次。"""
+        now = time.time()
+        if (
+            not refresh
+            and self._available is not None
+            and now - self._checked_at < self.availability_ttl
+        ):
+            return self._available
         try:
             response = self.session.get(self.base_url, headers=self._headers(), timeout=self.timeout)
         except Exception:  # noqa: BLE001
-            return False
-        return getattr(response, "status_code", 0) < 500
+            self._available = False
+        else:
+            self._available = getattr(response, "status_code", 0) < 500
+        self._checked_at = now
+        return self._available
 
     def search_subjects(self, keyword: str, *, limit: int = 5) -> List[Dict[str, Any]]:
         try:
@@ -53,6 +69,8 @@ class BangumiClient:
                 timeout=self.timeout,
             )
         except Exception as exc:  # noqa: BLE001
+            self._available = False
+            self._checked_at = time.time()
             raise BangumiUnavailable(f"Bangumi 不可达：{exc}") from exc
         if getattr(response, "status_code", 0) >= 400:
             raise BangumiError(f"Bangumi 搜索失败 ({response.status_code})")

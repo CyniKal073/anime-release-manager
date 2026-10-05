@@ -5,7 +5,14 @@ from __future__ import annotations
 import pytest
 
 from src.nekobt.client import MEDIA_SEARCH_PARAM, MEDIA_SEARCH_PATH, NekoBTClient
-from src.nekobt.media import MediaSearchResult, normalize_query, rank_candidates, search_media
+from src.nekobt.media import (
+    MediaSearchResult,
+    classify_confidence,
+    normalize_query,
+    query_variants,
+    rank_candidates,
+    search_media,
+)
 
 from tests.fakes import FakeResponse, FakeSession, media_result
 
@@ -93,7 +100,9 @@ def test_test2_search_uses_stripped_title():
     client = NekoBTClient(session=session, retries=1)
     result = search_media(client, "无职转生 第二季")
 
-    assert seen_queries == ["无职转生"]
+    # 季数后缀必须先剥掉；后续变体（繁简互转等）属于额外的补救尝试
+    assert seen_queries[0] == "无职转生"
+    assert "无职转生 第二季" not in seen_queries
     assert result.best.media_id == "s153"
     assert result.normalized_query == "无职转生"
 
@@ -106,3 +115,42 @@ def test_rank_candidates_sorts_by_similarity_then_year():
     ]
     ranked = rank_candidates(rows)
     assert [item.media_id for item in ranked] == ["b", "a", "c"]
+
+
+def test_query_variants_cover_traditional_chinese():
+    pytest.importorskip("zhconv")
+    variants = query_variants("葬送的芙莉莲")
+    assert variants[0] == "葬送的芙莉莲"
+    assert "葬送的芙莉蓮" in variants
+
+
+def test_query_variants_drop_punctuation():
+    variants = query_variants("败犬女主太多了！")
+    assert any("！" not in item for item in variants)
+
+
+def test_merge_keeps_best_similarity_across_variants():
+    """简体查询只拿到 0.5556、繁体变体拿到 1.0 时，合并后要保留 1.0。"""
+    pytest.importorskip("zhconv")
+
+    def handler(method, url, **kwargs):
+        query = kwargs["params"]["query"]
+        score = 0.5556 if query == "葬送的芙莉莲" else 1.0
+        return FakeResponse(
+            {"error": False, "data": {"results": [media_result("s462", "Frieren", score)]}}
+        )
+
+    session = FakeSession(handler)
+    client = NekoBTClient(session=session, retries=1)
+    result = search_media(client, "葬送的芙莉莲")
+
+    assert result.best.similarity == 1.0
+    assert len(result.candidates) == 1  # 同一个 media_id 不应重复出现
+
+
+def test_confidence_buckets():
+    assert classify_confidence(1.0) == "high"
+    assert classify_confidence(0.5556) == "high"
+    assert classify_confidence(0.5) == "high"
+    assert classify_confidence(0.4999) == "low"
+    assert classify_confidence(0.0) == "low"

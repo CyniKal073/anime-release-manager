@@ -34,6 +34,12 @@ class FakeNekoBT:
     def search_torrents(self, **kwargs):
         return TorrentSearchPage(results=self.torrent_rows, meta={})
 
+    def get_media(self, media_id):
+        for row in self.media_rows:
+            if row.get("id") == media_id:
+                return {"id": media_id, "title": row.get("title"), "year": row.get("year")}
+        return {"id": media_id}
+
     def download_torrent(self, torrent_id, public=True):
         self.downloaded.append(torrent_id)
         return self.torrent_bytes, f"{torrent_id}.torrent"
@@ -59,6 +65,33 @@ class FakeQbit:
         return {"stop": "http 404", "pause": "ok"}
 
 
+class FakeBangumi:
+    def __init__(self, subjects=None, available=True):
+        self.available = available
+        self.subjects = subjects if subjects is not None else [
+            {
+                "id": 464376,
+                "name_cn": "败犬女主太多了！",
+                "name": "負けヒロインが多すぎる！",
+                "date": "2024-07-13",
+            },
+            {
+                "id": 550507,
+                "name_cn": "败犬女主太多了！第二季",
+                "name": "負けヒロインが多すぎる！ 第2期",
+                "date": None,
+            },
+        ]
+        self.calls = []
+
+    def is_available(self, refresh=False):
+        return self.available
+
+    def search_subjects(self, keyword, limit=5):
+        self.calls.append(keyword)
+        return self.subjects[:limit]
+
+
 @pytest.fixture
 def ctx(tmp_path):
     settings = Settings(
@@ -72,6 +105,17 @@ def ctx(tmp_path):
         store=Store(settings.db_path),
     )
     context._qbit = FakeQbit()
+    context._bangumi = FakeBangumi()
+    return context
+
+
+@pytest.fixture
+def offline_ctx(tmp_path):
+    """Bangumi 不可用的情况。"""
+    settings = Settings(qbit_password="secret", db_path=tmp_path / "off.db")
+    context = ServiceContext(settings=settings, nekobt=FakeNekoBT(), store=Store(settings.db_path))
+    context._qbit = FakeQbit()
+    context._bangumi = FakeBangumi(available=False)
     return context
 
 
@@ -101,8 +145,51 @@ def test_search_returns_candidates_with_similarity(client):
     res = client.get("/api/search", params={"title": "葬送的芙莉莲"})
     assert res.status_code == 200
     body = res.json()
+    assert body["source"] == "bangumi"
+    first = body["candidates"][0]
+    assert first["media_id"] == "s462"
+    assert first["confidence"] == "high"
+    assert first["name_cn"] == "败犬女主太多了！"
+    assert first["origin"] == "bangumi"
+    assert first["year"] == 2024
+
+
+def test_search_falls_back_to_nekobt_when_bangumi_down(offline_ctx):
+    app = create_app()
+    app.dependency_overrides[get_context] = lambda: offline_ctx
+    body = TestClient(app).get("/api/search", params={"title": "葬送的芙莉莲"}).json()
+
+    assert body["source"] == "nekobt"
+    assert any("Bangumi 不可用" in note for note in body["notes"])
     assert body["candidates"][0]["media_id"] == "s462"
-    assert body["candidates"][0]["similarity"] == 0.5556
+    # 0.5556 属于可信档；0.0 的噪声被标成 low
+    assert body["candidates"][0]["confidence"] == "high"
+    assert body["candidates"][1]["confidence"] == "low"
+
+
+def test_confirmed_mapping_is_used_before_any_network_call(client, ctx):
+    payload = {"input_title": "葬送的芙莉莲", "media_id": "s462", "anilist_id": 154587, "confidence": 1.0}
+    assert client.post("/api/mapping", json=payload).json()["ok"] is True
+
+    body = client.get("/api/search", params={"title": "葬送的芙莉莲"}).json()
+    assert body["source"] == "cache"
+    assert body["candidates"][0]["media_id"] == "s462"
+    assert body["candidates"][0]["matched_by"] == "local-cache"
+    # 命中缓存后不应该再去问 Bangumi
+    assert ctx._bangumi.calls == []
+
+
+def test_bangumi_candidate_without_nekobt_match_is_marked(offline_ctx):
+    ctx = offline_ctx
+    ctx._bangumi = FakeBangumi(subjects=[{"id": 1, "name_cn": "某个作品", "name": "", "date": None}])
+    ctx.nekobt.media_rows = []
+    app = create_app()
+    app.dependency_overrides[get_context] = lambda: ctx
+    body = TestClient(app).get("/api/search", params={"title": "某个作品"}).json()
+
+    # 桥接失败 → 退回 nekoBT 模糊搜索
+    assert body["source"] == "nekobt"
+    assert any("没找到对应媒体" in note for note in body["notes"])
 
 
 def test_search_rejects_blank_title(client):

@@ -157,38 +157,75 @@ Jellyfin / Emby
 
 项目使用多个外部服务，但每个服务只负责自己擅长的事情。
 
-## 4.1 Bangumi（可选增强，不在关键路径）
+## 4.1 Bangumi（中文检索的第一入口）
 
 定位：
 
-> **作品元数据与中文消歧的补充来源。**
+> **中文作品名识别与消歧。**
 
-理论上可以解决：
+它是整条链路的第一步：把用户输入的中文名解析成一个确定的条目，再交给 nekoBT 去找资源。
 
-* 第一季 / 第二季 / OVA / 剧场版的区分
-* 获取稳定的 Subject ID
-* 获取中文名、原名、罗马音、英文名、别名
-* 获取年份、类型、集数等基础信息
+### 为什么必须是它
 
-但实测结论改变了它的定位：
+nekoBT 的中文能力是「碰巧某个作品的 AniList synonym 或 TVDB 别名里有中文」，覆盖率随机，
+而且是字符级模糊匹配、没有分词。同一批查询在两边的实测对比：
 
-* **Bangumi 在开发机上不可达**：`bgm.tv` 与 `api.bgm.tv` 连接均超时，不能作为 MVP 的硬依赖。
-* nekoBT 的媒体数据本身就内嵌了 AniList 信息（`anilist.id` / `anilist.primary.id_mal` / `title.romaji|english|native` / `synonyms`），并额外附带 `tvdbId` / `tmdbId` / `imdbId`，足以承担 MVP 的作品身份。
+| 输入 | nekoBT 媒体搜索 | Bangumi |
+| --- | --- | --- |
+| 日常 | s4149 (1.0)，但带不出「日常系的异能战斗」 | 116 条，含日常系的异能战斗 |
+| 败犬女主太多了 | m161 Under the Dog（**错**） | 464376 败犬女主太多了！（**对**） |
+| 败北女主太多了（打错字） | m161（错） | 464376（**照样对**） |
+| 水星领航员 | s1267 (1.0) | 531 / 750 / 1269第二季 / 1270第三季 |
+| 葬送的芙莉莲 | s462 (0.5556，繁简差异) | 400602，第二季与魔法篇分开 |
 
-因此 Bangumi 在 MVP 中的角色是：
+差别不在数据量，而在索引结构：Bangumi 把**中文名当独立字段维护**（`name_cn`），
+别名也参与索引，还有条目间的续集/前作关系；nekoBT 只有一堆混在一起的多语言标题。
+
+### 桥接方式（实测 6/6 命中）
 
 ```text
-能连上 → 用来补齐中文元数据、做二次校验
-连不上 → 直接跳过，不影响主流程
+中文输入
+    ↓  Bangumi /v0/search/subjects
+subject_id + name_cn + name（日文原名）
+    ↓  用「日文原名」查 nekoBT media/search
+media_id
+    ↓
+torrents/search?media_id=…
 ```
 
-Bangumi 不负责寻找 Torrent。
+Bangumi 的 `name` 是日文原名，而 nekoBT 的索引里有 AniList 的 `native` 字段，
+两边天然对得上，实测 similarity 全部是 1.0：
 
-接口形态（网络可用时）：
+```text
+葬送のフリーレン              → s462
+負けヒロインが多すぎる！      → s2951
+異能バトルは日常系のなかで    → s277
+ARIA The ANIMATION           → s1267
+```
 
-* 搜索：`POST https://api.bgm.tv/v0/search/subjects`
+所以 Bangumi 只负责「中文名 → 条目」这一步，Release 检索完全仍然走 nekoBT。
+
+### 降级要求（硬性）
+
+Bangumi 依赖网络可达性（实测：不开 VPN 时 `api.bgm.tv` 直接超时），因此必须有降级路径：
+
+```text
+本地映射缓存命中 → 直接用，不打网络
+      ↓ 未命中
+Bangumi 可用   → 中文检索 + 桥接
+      ↓ 不可用 / 桥接失败
+nekoBT 模糊搜索（附带置信度分档与查询变体）
+```
+
+降级不是「写在文档里」就算，实现上必须真的能在 Bangumi 超时时继续跑完流程。
+
+### 接口与约束
+
+* 搜索：`POST https://api.bgm.tv/v0/search/subjects`，body `{keyword, filter:{type:[2]}}`
 * 详情：`GET https://api.bgm.tv/v0/subjects/{id}`
-* 必须携带合规 `User-Agent`，否则返回 403
+* **必须携带合规 `User-Agent`**（带项目地址），否则 403
+* 有速率限制 → 本地映射缓存是必需项，不是优化项
+* Bangumi 不负责寻找 Torrent
 
 ---
 
@@ -356,26 +393,30 @@ paused=false
 ## Step 2：作品识别
 
 ```text
-用户输入
+用户输入中文名
     ↓
-nekoBT 媒体搜索（中文可命中）
+本地映射缓存命中？ ── 是 ─→ 直接拿到 media_id
+    ↓ 否
+Bangumi 搜索（中文强项）
     ↓
-候选作品（按 similarity 排序）
+用条目原名桥接到 nekoBT media_id
+    ↓ 不可用 / 桥接失败
+nekoBT 模糊搜索（带置信度分档）
+    ↓
+候选作品（标注来源与置信度）
 ```
 
 例如：
 
 ```text
-找到以下作品：
+识别来源：Bangumi
 
-[1] 葬送的芙莉莲
-    Frieren: Beyond Journey's End
-    2023 / TV / 28 集 / similarity 0.56
+[1] 败犬女主太多了！ / 2024
+    media_id=s2951  桥接=1.0000  置信度=high
+    原名=負けヒロインが多すぎる！
 
-[2] Frieren 第二季
-    2026 / TV
-
-[3] Frieren 特别篇
+[2] 败犬女主太多了！第二季
+    media_id=s2951  桥接=1.0000  置信度=high
 ```
 
 用户确认：
@@ -384,7 +425,11 @@ nekoBT 媒体搜索（中文可命中）
 > 1
 ```
 
-说明：nekoBT 的媒体搜索是模糊匹配，`similarity` 之后的条目基本都是噪声，必须由用户确认，不能静默取第一条。
+说明：
+
+* 用户确认后把「输入名 → media_id」写入 `media_mapping`，下次同一输入直接命中缓存、不再打网络。
+* 走 nekoBT 兜底时，候选按 similarity 分成高/低置信度两档展示——噪声和真候选不能混排。
+* 无论走哪条路，都必须由用户确认，不能静默取第一条。
 
 ---
 

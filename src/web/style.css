@@ -76,8 +76,15 @@ button.small { padding: 4px 10px; font-size: 12px; margin-left: 8px; }
 }
 .candidate:hover { border-color: var(--accent); }
 .candidate.active { border-color: var(--accent); background: #1d2637; }
+.candidate.disabled { opacity: .55; cursor: default; }
+.candidate.disabled:hover { border-color: var(--line); }
 .candidate .t { font-weight: 600; margin-bottom: 4px; }
 .candidate .m { color: var(--dim); font-size: 12px; display: flex; gap: 10px; }
+
+.group-title {
+  grid-column: 1 / -1; color: var(--dim); font-size: 12px;
+  margin: 6px 0 -2px; border-top: 1px dashed var(--line); padding-top: 10px;
+}
 
 .filter-groups { display: flex; flex-direction: column; gap: 10px; }
 .filter-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }

@@ -11,8 +11,15 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 from .config import Settings
+from .bangumi.client import BangumiClient, BangumiError
 from .nekobt.client import NekoBTClient, NekoBTError
-from .nekobt.media import MediaSearchResult, search_media
+from .nekobt.media import (
+    MediaCandidate,
+    MediaSearchResult,
+    classify_confidence,
+    rank_candidates,
+    search_media,
+)
 from .qbittorrent.client import QBittorrentClient, QBittorrentError
 from .release.matcher import (
     FilterResult,
@@ -35,6 +42,7 @@ class ServiceContext:
     nekobt: NekoBTClient
     store: Store
     _qbit: Optional[QBittorrentClient] = field(default=None, repr=False)
+    _bangumi: Optional[BangumiClient] = field(default=None, repr=False)
 
     @property
     def qbit(self) -> QBittorrentClient:
@@ -46,6 +54,15 @@ class ServiceContext:
                 timeout=self.settings.http_timeout,
             )
         return self._qbit
+
+    @property
+    def bangumi(self) -> BangumiClient:
+        if self._bangumi is None:
+            self._bangumi = BangumiClient(
+                user_agent=f"{self.settings.user_agent} (https://github.com/CyniKal073)",
+                timeout=min(self.settings.http_timeout, 12.0),
+            )
+        return self._bangumi
 
 
 def build_context(settings: Optional[Settings] = None) -> ServiceContext:
@@ -112,23 +129,142 @@ def save_preferences(store: Store, prefs: ReleasePreferences) -> None:
     store.set_setting(PREFS_KEY, json.dumps(preferences_to_dict(prefs), ensure_ascii=False))
 
 
-def search_works(ctx: ServiceContext, title: str, *, top: int = 5) -> Dict[str, Any]:
-    result: MediaSearchResult = search_media(ctx.nekobt, title, top=top)
-    return {
-        "query": result.query,
-        "normalized_query": result.normalized_query,
-        "used_fallback": result.used_fallback,
-        "candidates": [
-            {
-                "media_id": item.media_id,
-                "title": item.title,
-                "year": item.year,
-                "similarity": round(item.similarity, 4),
-                "anilist_id": item.anilist_id,
-            }
-            for item in result.candidates
-        ],
+def _year_from_date(value: Optional[str]) -> Optional[int]:
+    if not value:
+        return None
+    head = str(value)[:4]
+    return int(head) if head.isdigit() else None
+
+
+def _bridge_to_nekobt(ctx: ServiceContext, name: str) -> Optional[MediaCandidate]:
+    """用 Bangumi 的原名去 nekoBT 找对应媒体。
+
+    实测 6/6 精确命中：Bangumi 的 ``name`` 是日文原名，而 nekoBT 的索引里有
+    AniList 的 ``native`` 字段，两边是对得上的。
+    """
+    if not name:
+        return None
+    try:
+        rows = ctx.nekobt.search_media(name, limit=3)
+    except NekoBTError:
+        return None
+    ranked = rank_candidates(rows)
+    return ranked[0] if ranked else None
+
+
+def resolve_work(ctx: ServiceContext, title: str, *, top: int = 5) -> Dict[str, Any]:
+    """作品识别：本地缓存 → Bangumi → nekoBT 模糊搜索。
+
+    返回值里的 ``source`` 标明这次走的是哪条路，便于 UI 提示与排查。
+    """
+    title = (title or "").strip()
+    payload: Dict[str, Any] = {
+        "query": title,
+        "source": None,
+        "candidates": [],
+        "notes": [],
     }
+
+    # 1) 本地已确认过的映射：直接用，不再打网络
+    cached = ctx.store.get_mapping(title)
+    if cached and cached.confirmed:
+        detail: Dict[str, Any] = {}
+        try:
+            detail = ctx.nekobt.get_media(cached.nekobt_media_id)
+        except NekoBTError:
+            detail = {}
+        payload["source"] = "cache"
+        payload["candidates"] = [
+            {
+                "media_id": cached.nekobt_media_id,
+                "title": detail.get("title") or title,
+                "year": detail.get("year"),
+                "similarity": 1.0,
+                "anilist_id": cached.anilist_id,
+                "bangumi_id": cached.bgm_id,
+                "name_cn": None,
+                "name": None,
+                "origin": "cache",
+                "confidence": "high",
+                "matched_by": "local-cache",
+            }
+        ]
+        return payload
+
+    # 2) Bangumi：中文检索的第一入口
+    if ctx.bangumi.is_available():
+        try:
+            subjects = ctx.bangumi.search_subjects(title, limit=max(top, 3))
+        except BangumiError as exc:
+            subjects = []
+            payload["notes"].append(f"Bangumi 查询失败，已降级：{exc}")
+
+        candidates: List[Dict[str, Any]] = []
+        for rank, subject in enumerate(subjects):
+            name = (subject.get("name") or "").strip()
+            bridged = _bridge_to_nekobt(ctx, name)
+            item = {
+                "bangumi_id": subject.get("id"),
+                "name_cn": subject.get("name_cn"),
+                "name": name,
+                "title": subject.get("name_cn") or name or title,
+                "year": _year_from_date(subject.get("date")),
+                # similarity 表示「Bangumi 原名 → nekoBT 媒体」的桥接质量，
+                # 不是这个条目和用户查询的相关性；相关性由 Bangumi 的排序
+                # 位置（rank）体现，所以置信度按 rank 判定。
+                "similarity": round(bridged.similarity, 4) if bridged else 0.0,
+                "media_id": bridged.media_id if bridged else None,
+                "anilist_id": bridged.anilist_id if bridged else None,
+                "origin": "bangumi",
+                "rank": rank,
+                "confidence": "high" if (rank < 2 and bridged) else "low",
+                "matched_by": f"bangumi:{subject.get('id')}",
+            }
+            candidates.append(item)
+
+        if any(item["media_id"] for item in candidates):
+            candidates.sort(key=lambda item: (item["media_id"] is None, item["rank"]))
+            payload["source"] = "bangumi"
+            payload["candidates"] = candidates
+            return payload
+        if candidates:
+            payload["notes"].append(
+                "Bangumi 命中条目，但在 nekoBT 里没找到对应媒体，已退回模糊搜索"
+            )
+    else:
+        payload["notes"].append("Bangumi 不可用（网络不通或未启用），使用 nekoBT 模糊搜索")
+
+    # 3) 兜底：nekoBT 模糊搜索
+    result: MediaSearchResult = search_media(ctx.nekobt, title, top=top)
+    payload["source"] = "nekobt"
+    payload["normalized_query"] = result.normalized_query
+    payload["used_fallback"] = result.used_fallback
+    payload["tried_queries"] = result.tried_queries
+    payload["candidates"] = [item.to_dict() for item in result.candidates]
+    return payload
+
+
+def confirm_mapping(
+    ctx: ServiceContext,
+    *,
+    input_title: str,
+    media_id: str,
+    anilist_id: Optional[int] = None,
+    bangumi_id: Optional[int] = None,
+    confidence: float = 1.0,
+) -> Dict[str, Any]:
+    """用户确认候选后写入本地映射，之后同一输入直接命中缓存。"""
+    ctx.store.save_mapping(
+        MediaMappingRecord(
+            input_title=input_title,
+            nekobt_media_id=media_id,
+            anilist_id=anilist_id,
+            bgm_id=bangumi_id,
+            confidence=confidence,
+            confirmed=True,
+        )
+    )
+    return {"ok": True, "input_title": input_title, "media_id": media_id}
 
 
 def releases_to_dict(release: Release) -> Dict[str, Any]:

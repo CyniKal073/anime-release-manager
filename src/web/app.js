@@ -10,10 +10,12 @@ const LABELS = {
   resolution: "分辨率", source: "来源", codec: "编码", sub_lang: "字幕",
 };
 const SUB_LABEL = { "zh-hans": "简中", "zh-hant": "繁中", "en": "英文" };
+const SOURCE_LABEL = { cache: "本地缓存", bangumi: "Bangumi", nekobt: "nekoBT 模糊搜索" };
 
 const state = {
   candidates: [],
   selected: null,
+  searchMeta: null,
   data: null,
   tab: "matched",
   active: { resolution: [], source: [], codec: [], sub_lang: [] },
@@ -70,13 +72,18 @@ async function doSearch() {
   btn.disabled = true; btn.textContent = "搜索中…";
   try {
     const r = await api("/api/search?title=" + encodeURIComponent(title));
-    state.candidates = r.candidates;
+    state.candidates = r.candidates || [];
+    state.searchMeta = r;
     state.selected = null;
     renderCandidates();
-    $("searchHint").textContent = r.normalized_query !== r.query
-      ? `检索用标题：${r.normalized_query}（已剥离季数后缀）`
-      : `共 ${r.candidates.length} 个候选`;
-    if (!r.candidates.length) toast("没有找到对应作品");
+    const bits = [`识别来源：${SOURCE_LABEL[r.source] || r.source || "未知"}`];
+    if (r.normalized_query && r.normalized_query !== r.query) {
+      bits.push(`检索用标题：${r.normalized_query}（已剥离季数后缀）`);
+    }
+    bits.push(`候选 ${state.candidates.length} 个`);
+    $("searchHint").textContent = bits.join(" · ");
+    (r.notes || []).forEach((note) => toast(note));
+    if (!state.candidates.length) toast("没有找到对应作品");
   } catch (err) {
     toast("搜索失败：" + err.message, "bad");
   } finally {
@@ -88,24 +95,66 @@ function renderCandidates() {
   const box = $("candidates");
   box.innerHTML = "";
   $("candCount").textContent = state.candidates.length;
-  state.candidates.forEach((c) => {
-    const el = document.createElement("div");
-    el.className = "candidate";
-    const sim = c.similarity ? c.similarity.toFixed(4) : "0";
-    el.innerHTML =
-      `<div class="t"></div><div class="m"><span>${c.media_id}</span>` +
-      `<span>${c.year || "年份未知"}</span><span>相似度 ${sim}</span></div>`;
-    el.querySelector(".t").textContent = c.title;
-    el.onclick = () => selectCandidate(c, el);
-    box.appendChild(el);
-  });
+  const usable = state.candidates.filter((c) => c.media_id && c.confidence !== "low");
+  const rest = state.candidates.filter((c) => !(c.media_id && c.confidence !== "low"));
+  const addGroup = (title, items) => {
+    if (!items.length) return;
+    const heading = document.createElement("div");
+    heading.className = "group-title";
+    heading.textContent = title;
+    box.appendChild(heading);
+    items.forEach((item) => box.appendChild(candidateEl(item)));
+  };
+  addGroup("可信候选", usable);
+  addGroup("低置信度 / 未匹配（多半是噪声，仅供参考）", rest);
   $("candidatesCard").classList.remove("hidden");
+}
+
+function candidateEl(c) {
+  const el = document.createElement("div");
+  el.className = "candidate";
+  if (!c.media_id) el.classList.add("disabled");
+  const meta = [
+    c.media_id || "nekoBT 无对应媒体",
+    c.year || "年份未知",
+    `相似度 ${(c.similarity || 0).toFixed(4)}`,
+    SOURCE_LABEL[c.origin] || c.origin || "",
+  ].filter(Boolean);
+  el.innerHTML = "<div class=\"t\"></div><div class=\"m\"></div>";
+  el.querySelector(".t").textContent = c.name_cn ? `${c.name_cn}｜${c.title}` : c.title;
+  el.querySelector(".m").textContent = meta.join(" · ");
+  if (c.name && c.name !== c.title) {
+    const original = document.createElement("div");
+    original.className = "m";
+    original.textContent = "原名：" + c.name;
+    el.appendChild(original);
+  }
+  if (c.media_id) {
+    el.onclick = () => selectCandidate(c, el);
+  }
+  return el;
 }
 
 async function selectCandidate(candidate, el) {
   document.querySelectorAll(".candidate").forEach((n) => n.classList.remove("active"));
   el.classList.add("active");
   state.selected = candidate;
+  // 把这次确认沉淀到本地映射，下次同一输入直接命中缓存
+  try {
+    await api("/api/mapping", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input_title: (state.searchMeta && state.searchMeta.query) || candidate.name_cn || candidate.title,
+        media_id: candidate.media_id,
+        anilist_id: candidate.anilist_id,
+        bangumi_id: candidate.bangumi_id,
+        confidence: candidate.similarity,
+      }),
+    });
+  } catch (err) {
+    /* 缓存写入失败不影响主流程 */
+  }
   $("filtersCard").classList.remove("hidden");
   $("historyCard").classList.remove("hidden");
   await loadReleases();

@@ -1,5 +1,6 @@
 requests>=2.28
 python-dotenv>=0.21
+zhconv>=1.4          # 中文繁简转换，用于 nekoBT 兜底路径的查询变体
 fastapi>=0.110
 uvicorn>=0.27
 httpx>=0.27
