@@ -26,9 +26,10 @@ Release 检索 → 标准化 → 筛选 → 排序
 qBittorrent WebAPI
 ```
 
-已验证：中文检索、media_id 解析、Release 检索与解析、筛选排序、`.torrent` 获取。
+已验证（端到端跑通）：中文检索、media_id 解析、Release 检索与解析、筛选排序、
+`.torrent` 获取、提交 qBittorrent、指定保存目录、真实下载。
 
-未验证：qBittorrent 的实际提交（需要先启用 WebUI），见「待办」。
+当前未验证：nekoBT 非公开种子需要 API Key 的路径；Bangumi 在当前网络不可达。
 
 ---
 
@@ -108,7 +109,7 @@ src/
 │   └── client.py           WebAPI v2（登录 / 添加 / 查询 / 停止 / 删除）
 └── bangumi/
     └── client.py           可选增强，不可用时自动跳过
-tests/                      46 个离线用例
+tests/                      57 个离线用例
 ```
 
 ---
@@ -125,10 +126,12 @@ tests/                      46 个离线用例
 6. **`video_type` 语义未明**（实测 3/7/8/9/12/13/15 混杂，且是精确匹配而非位运算），所以来源筛选一律走标题解析后的客户端过滤，API 字段只作原始信息保留。
 7. **`resolution` / `source` 不在 API 返回里**，必须从标题解析。
 8. **本机 pytest 会被 anyio 插件卡死**（anyio 3.5 + pytest 7.1.2 不兼容），`pytest.ini` 里已用 `-p no:anyio` 禁掉。
+9. **8080 端口被 NI Application Web Server 占用**，它对 `/api/v2/*` 一律返回 404，所以 qBittorrent WebUI 改用了 8081。
+10. **qBittorrent 的暂停/恢复接口名随版本变化**：4.6 只有 `pause`/`resume`，5.0+ 才是 `stop`/`start`；客户端做的是「新名优先、404 回退」。
 
 ## 待办
 
-- [ ] **启用 qBittorrent WebUI**（工具 → 选项 → Web UI），然后跑 `python -m src.main doctor` 验证 `webapiVersion` 能取到
-- [ ] 用真实种子验证「获取 `.torrent` → 提交 qBittorrent → 任务出现在客户端」
+- [x] 启用 qBittorrent WebUI，`doctor` 自检通过（WebAPI 2.9.3 / 应用 v4.6.5.10）
+- [x] 真实种子验证「获取 `.torrent` → 提交 qBittorrent → 任务出现在客户端 → 正常下载」
 - [ ] nekoBT 非公开种子（`private_magnet`）的 API Key 形式尚未验证
 - [ ] Bangumi 在当前网络不可达，相关代码路径未实测

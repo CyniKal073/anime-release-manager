@@ -285,8 +285,16 @@ MVP 使用 **qBittorrent WebUI API（WebAPI v2）**，不再使用 BitComet。�
 本机环境（已确认）：
 
 ```text
-F:\qBittorrentEE\qbittorrent.exe     版本 5.0.4.10（qBittorrent Enhanced Edition）
+F:\qBittorrentEE\qbittorrent_x64.exe   版本 v4.6.5.10（运行时实际使用的就是它）
+F:\qBittorrentEE\qbittorrent.exe       版本 v5.1.0.11（同目录的另一个主程序，未被使用）
+WebAPI 2.9.3 / WebUI 端口 8081
 ```
+
+注意两个坑：
+
+* 注册表卸载信息里写的是 5.0.4.10，那是残留记录，不要信；版本以二进制的 FileVersion 为准。
+* 8080 端口被 `NIApplicationWebServer`（National Instruments 的 Embedded-http 服务）占用，
+  它对 `/api/v2/*` 一律返回 404，因此 WebUI 必须改用 8081 等空闲端口。
 
 调用链路：
 
@@ -1722,8 +1730,10 @@ synonyms 含：葬送的芙莉蓮、장송의 프리렌、Frieren at the Funeral
 ## A.4 qBittorrent
 
 ```text
-F:\qBittorrentEE\qbittorrent.exe     版本 5.0.4.10
-WebUI 当前状态：未启用（配置文件中没有 WebUI 段落）
+F:\qBittorrentEE\qbittorrent_x64.exe   版本 v4.6.5.10（实际运行）
+F:\qBittorrentEE\qbittorrent.exe       版本 v5.1.0.11（未使用）
+WebAPI 版本 2.9.3
+WebUI 端口 8081（8080 被 NI Application Web Server 占用）
 ```
 
 WebAPI v2 关键约定：
@@ -1733,7 +1743,19 @@ WebAPI v2 关键约定：
 * 添加：`POST /api/v2/torrents/add`，`multipart/form-data`
   * 种子来源：`urls`（URL / magnet）或 `torrents`（文件二进制）
   * 其他字段：`savepath` / `category` / `tags` / `paused` / `skip_checking` / `root_folder`
-* 5.0 的暂停/恢复接口是 `torrents/stop` / `torrents/start`
+* 暂停/恢复的接口名随版本变化，必须做兼容：
+  * 4.6（WebAPI 2.9.3）：只有 `torrents/pause` / `torrents/resume`
+  * 5.0+（WebAPI 2.11+）：改名为 `torrents/stop` / `torrents/start`
+  * 实测 4.6 上调用 `torrents/stop` 返回 404，所以客户端采用「新名优先、404 回退旧名」
+* 添加任务的暂停字段同样变过：4.x / 5.0 用 `paused`，5.1+ 用 `stopped`；两个都发最省事
+
+实测已验证（本机 v4.6.5.10）：
+
+```text
+POST /api/v2/torrents/add  → 任务出现，分类/标签正确，savepath = D:\Anime\library
+POST /api/v2/torrents/delete (deleteFiles=true) → 任务与磁盘文件一并清除
+真实下载可正常进行，做种数充足
+```
 
 ## A.5 本机环境
 
@@ -1748,5 +1770,4 @@ Python       3.9.13 (D:\Anaconda\python.exe)
 
 ## A.6 尚未验证
 
-* qBittorrent WebUI 尚未启用，登录 + 添加任务的端到端链路需要在启用后实测
 * nekoBT 非公开种子（`private_magnet` 非空）需要 API Key，尚未验证
