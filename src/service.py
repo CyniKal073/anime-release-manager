@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from .config import Settings
@@ -23,6 +24,7 @@ from .nekobt.media import (
 )
 from .qbittorrent.client import QBittorrentClient, QBittorrentError
 from .qbittorrent.launcher import ensure_running
+from .mkv.tools import MkvToolError, MkvTools
 from .release.matcher import (
     FilterResult,
     ReleasePreferences,
@@ -30,7 +32,7 @@ from .release.matcher import (
     default_preferences,
     rank_releases,
 )
-from .release.models import Release
+from .release.models import Release, human_size
 from .release.parser import build_release
 from .storage import JsonCache, MediaMappingRecord, Store
 
@@ -54,6 +56,7 @@ class ServiceContext:
     _cache: Optional[JsonCache] = field(default=None, repr=False)
     _bridge_cache: Optional[JsonCache] = field(default=None, repr=False)
     _search_cache: Optional[JsonCache] = field(default=None, repr=False)
+    _mkv: Optional[MkvTools] = field(default=None, repr=False)
     #: 自检专用探针（短超时、不重试）；测试里可注入假实现
     nekobt_probe: Optional[Any] = None
     bangumi_probe: Optional[Any] = None
@@ -97,6 +100,12 @@ class ServiceContext:
         if self._search_cache is None:
             self._search_cache = JsonCache(self.settings.cache_dir, ttl_seconds=SEARCH_TTL)
         return self._search_cache
+
+    @property
+    def mkv(self) -> MkvTools:
+        if self._mkv is None:
+            self._mkv = MkvTools(self.settings.mkv_tools_dir)
+        return self._mkv
 
 
 def build_context(settings: Optional[Settings] = None) -> ServiceContext:
@@ -442,6 +451,111 @@ def calendar_view(ctx: ServiceContext, *, refresh: bool = False) -> Dict[str, An
 
     ctx.cache.set(CALENDAR_KEY, days)
     return {"ok": True, "source": "bangumi", "days": days}
+
+
+# ---------------------------------------------------- 内封字幕（MKVToolNix）
+
+#: 列目录时认为「可能是视频」的扩展名
+VIDEO_SUFFIXES = (".mkv", ".mp4", ".m4v", ".avi", ".ts", ".m2ts", ".mov", ".wmv", ".flv")
+
+
+def list_library(
+    ctx: ServiceContext, path: Optional[str] = None, *, limit: int = 300
+) -> Dict[str, Any]:
+    """列出下载目录里的视频文件，供字幕工具选择。"""
+    root = Path(path) if path else Path(ctx.settings.qbit_savepath)
+    if not root.is_dir():
+        return {"ok": False, "root": str(root), "error": f"目录不存在：{root}", "files": []}
+
+    files: List[Dict[str, Any]] = []
+    for item in sorted(root.rglob("*")):
+        if len(files) >= limit:
+            break
+        if not item.is_file() or item.suffix.lower() not in VIDEO_SUFFIXES:
+            continue
+        try:
+            size = item.stat().st_size
+        except OSError:
+            size = 0
+        files.append(
+            {
+                "path": str(item),
+                "name": item.name,
+                "relative": str(item.relative_to(root)),
+                "size": size,
+                "size_text": human_size(size),
+            }
+        )
+    return {"ok": True, "root": str(root), "files": files}
+
+
+def subtitle_probe(ctx: ServiceContext, path: str) -> Dict[str, Any]:
+    """读取一个视频文件的轨道信息。"""
+    try:
+        info = ctx.mkv.probe(path)
+    except MkvToolError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, **info}
+
+
+def subtitle_merge(
+    ctx: ServiceContext,
+    *,
+    target: str,
+    source: str,
+    track_ids: Sequence[int],
+    language: str = "chi",
+    track_name: Optional[str] = None,
+    output: Optional[str] = None,
+    make_default: bool = True,
+) -> Dict[str, Any]:
+    """把来源视频里的字幕轨搬进目标视频。
+
+    流程：mkvextract 提取 → mkvmerge 合并。视频/音频流原样复制，不重编码。
+    提取出的字幕文件保留在 data/subtitles/ 下，方便单独取用。
+    """
+    if not track_ids:
+        return {"ok": False, "error": "请至少选择一条字幕轨"}
+
+    target_path = Path(target)
+    if not target_path.is_file():
+        return {"ok": False, "error": f"目标视频不存在：{target}"}
+    if Path(source).resolve() == target_path.resolve():
+        return {"ok": False, "error": "目标视频和来源视频不能是同一个文件"}
+
+    if output:
+        output_path = Path(output)
+        if not output_path.is_absolute():
+            output_path = target_path.parent / output_path
+    else:
+        output_path = target_path.with_name(f"{target_path.stem}.subbed.mkv")
+    if output_path.suffix.lower() != ".mkv":
+        output_path = output_path.with_suffix(".mkv")
+
+    extract_dir = Path(ctx.settings.cache_dir).parent / "subtitles"
+    try:
+        extracted = ctx.mkv.extract(source, list(track_ids), str(extract_dir))
+        result = ctx.mkv.mux_subtitles(
+            str(target_path),
+            extracted,
+            str(output_path),
+            language=language,
+            track_name=track_name or None,
+            make_default=make_default,
+        )
+    except MkvToolError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    return {
+        "ok": True,
+        "target": str(target_path),
+        "source": source,
+        "output": result["output"],
+        "output_size": result.get("size"),
+        "output_size_text": human_size(result.get("size") or 0),
+        "extracted": extracted,
+        "warnings": result.get("warnings", False),
+    }
 
 
 def releases_to_dict(release: Release) -> Dict[str, Any]:

@@ -542,6 +542,7 @@ window.addEventListener("DOMContentLoaded", () => {
   loadHealth();
   applyCalendarCollapsed(localStorage.getItem("calendarCollapsed") === "1");
   loadCalendar(false);
+  loadLibrary();
   loadHistory();
   $("historyCard").classList.remove("hidden");
   $("searchBtn").onclick = doSearch;
@@ -559,7 +560,149 @@ window.addEventListener("DOMContentLoaded", () => {
     localStorage.setItem("calendarCollapsed", collapsed ? "1" : "0");
     $("toggleCalendar").textContent = collapsed ? "展开" : "收起";
   };
+  $("subProbe").onclick = probeSubtitles;
+  $("subMerge").onclick = mergeSubtitles;
 });
+
+/* ------------------------------------------------------------ 字幕合并 */
+
+const CHINESE_LANGS = ["chi", "zh", "zho", "chs", "cht", "zh-cn", "zh-tw"];
+
+async function loadLibrary() {
+  try {
+    const r = await api("/api/library");
+    const list = $("libraryFiles");
+    list.innerHTML = "";
+    (r.files || []).forEach((file) => {
+      const option = document.createElement("option");
+      option.value = file.path;
+      option.label = `${file.name}  (${file.size_text})`;
+      list.appendChild(option);
+    });
+    $("libraryHint").textContent = r.ok
+      ? `下载目录：${r.root}（找到 ${(r.files || []).length} 个视频文件，输入框里可以直接选）`
+      : r.error || "";
+  } catch (err) {
+    $("libraryHint").textContent = "读取下载目录失败：" + err.message;
+  }
+}
+
+function isChineseTrack(track) {
+  const lang = (track.language || "").toLowerCase();
+  const name = (track.name || "").toLowerCase();
+  return (
+    CHINESE_LANGS.includes(lang) ||
+    name.includes("简") || name.includes("繁") || name.includes("中") ||
+    name.includes("chs") || name.includes("cht") || name.includes("chi")
+  );
+}
+
+async function probeSubtitles() {
+  const path = $("subSource").value.trim();
+  const box = $("subTracks");
+  if (!path) {
+    toast("请先填「来源视频」的路径");
+    return;
+  }
+  $("subHint").textContent = "读取中…";
+  box.innerHTML = "";
+  try {
+    const r = await api("/api/subtitle/probe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    if (!r.ok) {
+      $("subHint").textContent = "";
+      toast("读取失败：" + r.error, "bad");
+      return;
+    }
+    const tracks = r.subtitle_tracks || [];
+    $("subHint").textContent = `${r.name}：共 ${r.tracks.length} 条轨道，其中字幕 ${tracks.length} 条`;
+    if (!tracks.length) {
+      toast("这个文件里没有内封字幕");
+      return;
+    }
+    tracks.forEach((track) => box.appendChild(trackRow(track)));
+  } catch (err) {
+    $("subHint").textContent = "";
+    toast("读取失败：" + err.message, "bad");
+  }
+}
+
+function trackRow(track) {
+  const row = document.createElement("label");
+  row.className = "track-row";
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.value = track.id;
+  check.checked = isChineseTrack(track);
+  check.onchange = () => row.classList.toggle("on", check.checked);
+  row.classList.toggle("on", check.checked);
+  row.appendChild(check);
+
+  const name = document.createElement("span");
+  name.className = "tname";
+  name.textContent = track.name || `轨道 ${track.id}`;
+  row.appendChild(name);
+
+  const meta = document.createElement("span");
+  meta.className = "tmeta";
+  meta.textContent = [
+    `#${track.id}`,
+    track.language || "und",
+    track.codec,
+    track.default ? "默认" : null,
+    track.forced ? "强制" : null,
+  ].filter(Boolean).join(" · ");
+  row.appendChild(meta);
+  return row;
+}
+
+async function mergeSubtitles() {
+  const target = $("subTarget").value.trim();
+  const source = $("subSource").value.trim();
+  const ids = Array.from($("subTracks").querySelectorAll("input:checked")).map((n) =>
+    Number(n.value)
+  );
+  if (!target || !source) {
+    toast("目标视频和来源视频都要填");
+    return;
+  }
+  if (!ids.length) {
+    toast("请先点「读取来源的字幕轨」，并勾选要搬运的轨道");
+    return;
+  }
+  const btn = $("subMerge");
+  btn.disabled = true;
+  btn.textContent = "合并中…";
+  try {
+    const r = await api("/api/subtitle/merge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        target,
+        source,
+        track_ids: ids,
+        language: $("subLang").value,
+        track_name: $("subTrackName").value.trim() || null,
+        output: $("subOutput").value.trim() || null,
+        make_default: $("subDefault").checked,
+      }),
+    });
+    if (!r.ok) {
+      toast("合并失败：" + r.error, "bad");
+      return;
+    }
+    toast(`已生成：${r.output}\n体积 ${r.output_size_text}`, "ok");
+    loadLibrary();
+  } catch (err) {
+    toast("合并失败：" + err.message, "bad");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "开始合并";
+  }
+}
 
 /** 收起/展开连载区：收起后只留标题一行，方便直接够到下面的搜索栏。 */
 function applyCalendarCollapsed(collapsed) {

@@ -186,9 +186,61 @@
   </section>
 
   <!-- ======================================================================
+       [7] 字幕合并（MKVToolNix）
+       把「带中文字幕的资源」里的字幕轨搬到「想保留画质的视频」里。
+       不重编码，只复制字幕轨道，几秒完成。原文件不会被修改。
+       ====================================================================== -->
+  <section class="card" id="subtitleCard">
+    <h2>字幕合并 <span class="badge" id="mkvVersion"></span></h2>
+    <p class="hint">把来源视频里的字幕轨搬进目标视频，视频本身不重编码。留空输出文件名时会在目标旁边生成「原名.subbed.mkv」。</p>
+
+    <div class="sub-grid">
+      <!-- 目标视频：想保留画质的那一个 -->
+      <label>目标视频（想保留的版本）
+        <input id="subTarget" list="libraryFiles" placeholder="D:\Anime\library\...\xxx.mkv">
+      </label>
+      <!-- 来源视频：带中文字幕的那一个 -->
+      <label>来源视频（带中文字幕）
+        <input id="subSource" list="libraryFiles" placeholder="另一个文件">
+      </label>
+    </div>
+    <!-- 下载目录下的视频文件清单，供上面两个输入框自动补全 -->
+    <datalist id="libraryFiles"></datalist>
+    <p class="hint" id="libraryHint"></p>
+
+    <div class="sub-actions">
+      <button id="subProbe" class="ghost">读取来源的字幕轨</button>
+      <span class="muted" id="subHint"></span>
+    </div>
+
+    <!-- 字幕轨列表（带复选框）由脚本渲染 -->
+    <div id="subTracks"></div>
+
+    <div class="sub-actions">
+      <label>语言
+        <select id="subLang">
+          <option value="chi">中文 (chi)</option>
+          <option value="eng">英文 (eng)</option>
+          <option value="jpn">日文 (jpn)</option>
+        </select>
+      </label>
+      <label>轨道名
+        <input id="subTrackName" placeholder="留空则不设置，如「简体中文」">
+      </label>
+      <label class="check">
+        <input id="subDefault" type="checkbox" checked> 设为默认字幕
+      </label>
+      <label>输出文件名
+        <input id="subOutput" placeholder="留空 = 原名.subbed.mkv">
+      </label>
+      <button id="subMerge" class="primary">开始合并</button>
+    </div>
+  </section>
+
+  <!-- ======================================================================
        [6] 下载历史
        记录每次提交的种子：时间 / 标题 / 保存目录 / 状态 / hash。
-       数据存在 data/anime_release_manager.db 的 downloads 表里。
+      数据存在 data/anime_release_manager.db 的 downloads 表里。
        ====================================================================== -->
   <section class="card hidden" id="historyCard">
     <h2>下载历史 <button id="loadHistory" class="ghost small">刷新</button></h2>

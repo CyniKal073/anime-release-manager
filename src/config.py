@@ -13,6 +13,7 @@ from typing import Mapping, Optional
 
 DEFAULT_SAVEPATH = r"D:\Anime\library"
 DEFAULT_QBIT_EXE = r"F:\qBittorrentEE\qbittorrent_x64.exe"
+DEFAULT_MKV_TOOLS_DIR = r"F:\MKVToolNix"
 DEFAULT_DB_PATH = Path("data") / "anime_release_manager.db"
 DEFAULT_CACHE_DIR = Path("data") / "cache"
 
@@ -79,6 +80,8 @@ class Settings:
     qbit_tags: str = "nekobt"
     #: 需要下载时若 qBittorrent 没在运行，就尝试用这个可执行文件把它拉起来
     qbit_executable: str = DEFAULT_QBIT_EXE
+    #: MKVToolNix 所在目录（mkvmerge / mkvextract）
+    mkv_tools_dir: str = DEFAULT_MKV_TOOLS_DIR
 
     http_timeout: float = 20.0
     http_retries: int = 3
@@ -107,6 +110,7 @@ class Settings:
             qbit_category=raw("QBIT_CATEGORY", "anime") or "anime",
             qbit_tags=raw("QBIT_TAGS", "nekobt") or "nekobt",
             qbit_executable=raw("QBIT_EXECUTABLE", DEFAULT_QBIT_EXE) or DEFAULT_QBIT_EXE,
+            mkv_tools_dir=raw("MKV_TOOLS_DIR", DEFAULT_MKV_TOOLS_DIR) or DEFAULT_MKV_TOOLS_DIR,
             http_timeout=_get_float(source, "HTTP_TIMEOUT", 20.0),
             http_retries=_get_int(source, "HTTP_RETRIES", 3),
             user_agent=raw("HTTP_USER_AGENT", "anime-release-manager/0.1") or "anime-release-manager/0.1",

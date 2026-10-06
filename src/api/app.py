@@ -28,12 +28,15 @@ from ..service import (
     calendar_view,
     confirm_mapping,
     health,
+    list_library,
     list_releases,
     load_preferences,
     preferences_from_dict,
     preferences_to_dict,
     resolve_work,
     save_preferences,
+    subtitle_merge,
+    subtitle_probe,
     submit_download,
 )
 
@@ -77,6 +80,20 @@ class MappingRequest(BaseModel):
 
 class BridgeRequest(BaseModel):
     name: str
+
+
+class SubtitleProbeRequest(BaseModel):
+    path: str
+
+
+class SubtitleMergeRequest(BaseModel):
+    target: str
+    source: str
+    track_ids: List[int] = []
+    language: str = "chi"
+    track_name: Optional[str] = None
+    output: Optional[str] = None
+    make_default: bool = True
 
 
 def create_app() -> FastAPI:
@@ -195,6 +212,41 @@ def create_app() -> FastAPI:
     ) -> Dict[str, Any]:
         """本季连载（Bangumi 每日放送）。Bangumi 不可用时返回 ok=false 而不是报错。"""
         return calendar_view(ctx, refresh=refresh)
+
+    # ------------------------------------------------------- 内封字幕工具
+
+    @app.get("/api/library")
+    def api_library(
+        path: Optional[str] = None,
+        ctx: ServiceContext = Depends(get_context),
+    ) -> Dict[str, Any]:
+        """列出下载目录里的视频文件，供字幕工具选择。"""
+        return list_library(ctx, path)
+
+    @app.post("/api/subtitle/probe")
+    def api_subtitle_probe(
+        req: SubtitleProbeRequest,
+        ctx: ServiceContext = Depends(get_context),
+    ) -> Dict[str, Any]:
+        """读取视频文件的轨道列表（含字幕轨的语言、格式、是否默认）。"""
+        return subtitle_probe(ctx, req.path)
+
+    @app.post("/api/subtitle/merge")
+    def api_subtitle_merge(
+        req: SubtitleMergeRequest,
+        ctx: ServiceContext = Depends(get_context),
+    ) -> Dict[str, Any]:
+        """把来源视频的字幕轨合并进目标视频（不重编码）。"""
+        return subtitle_merge(
+            ctx,
+            target=req.target,
+            source=req.source,
+            track_ids=req.track_ids,
+            language=req.language,
+            track_name=req.track_name,
+            output=req.output,
+            make_default=req.make_default,
+        )
 
     @app.get("/api/preferences")
     def api_get_preferences(ctx: ServiceContext = Depends(get_context)) -> Dict[str, Any]:
