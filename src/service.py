@@ -252,6 +252,25 @@ def _media_detail(ctx: ServiceContext, media_id: str) -> Dict[str, Any]:
     return detail
 
 
+def _bangumi_search(ctx: ServiceContext, title: str, limit: int):
+    """查 Bangumi（带 10 分钟缓存）。返回 (subjects, error)，subjects=None 表示不可用。
+
+    这里刻意不用 ``is_available()`` 做前置判断：那个判断有 TTL 记忆，
+    一次偶发失败会让接下来 60 秒的所有搜索都白白降级。
+    直接尝试、失败再降级更准确，代价也只是同一个请求。
+    """
+    search_key = f"bangumi:search:{title}:{limit}"
+    cached = ctx.search_cache.get(search_key)
+    if cached is not None:
+        return cached, None
+    try:
+        subjects = ctx.bangumi.search_subjects(title, limit=limit)
+    except BangumiError as exc:
+        return None, str(exc)
+    ctx.search_cache.set(search_key, subjects)
+    return subjects, None
+
+
 def resolve_work(ctx: ServiceContext, title: str, *, top: int = 5) -> Dict[str, Any]:
     """作品识别：本地缓存 → Bangumi → nekoBT 模糊搜索。
 
@@ -265,42 +284,18 @@ def resolve_work(ctx: ServiceContext, title: str, *, top: int = 5) -> Dict[str, 
         "notes": [],
     }
 
-    # 1) 本地已确认过的映射：直接用，不再打网络
+    # 1) 本地已确认过的映射
+    #
+    # 注意：它**只在 Bangumi 不可用时**才当作快速通道。
+    # 早期版本无条件短路，导致「搜同一个名字只会得到上次选的那一部」——
+    # 多季作品（第一季/第二季/特别篇）就再也选不了别的了。
+    # 现在它退化为一个标记：正常搜索照做，只是把上次选的那条排到最前并打标。
     cached = ctx.store.get_mapping(title)
-    if cached and cached.confirmed:
-        detail = _media_detail(ctx, cached.nekobt_media_id)
-        payload["source"] = "cache"
-        payload["candidates"] = [
-            {
-                "media_id": cached.nekobt_media_id,
-                "title": detail.get("title") or title,
-                "year": detail.get("year"),
-                "similarity": 1.0,
-                "image": detail.get("banner_url"),
-                "anilist_id": cached.anilist_id,
-                "bangumi_id": cached.bgm_id,
-                "name_cn": None,
-                "name": None,
-                "origin": "cache",
-                "confidence": "high",
-                "matched_by": "local-cache",
-            }
-        ]
-        return payload
+    cached_confirmed = bool(cached and cached.confirmed)
 
-    # 2) Bangumi：中文检索的第一入口
-    if ctx.bangumi.is_available():
-        limit = max(top, 3)
-        search_key = f"bangumi:search:{title}:{limit}"
-        subjects = ctx.search_cache.get(search_key)
-        if subjects is None:
-            try:
-                subjects = ctx.bangumi.search_subjects(title, limit=limit)
-                ctx.search_cache.set(search_key, subjects)
-            except BangumiError as exc:
-                subjects = []
-                payload["notes"].append(f"Bangumi 查询失败，已降级：{exc}")
-
+    # 2) Bangumi：中文检索的第一入口（直接尝试，失败才算不可用）
+    subjects, bangumi_error = _bangumi_search(ctx, title, max(top, 3))
+    if subjects is not None:
         candidates: List[Dict[str, Any]] = []
         for rank, subject in enumerate(subjects):
             name = (subject.get("name") or "").strip()
@@ -322,17 +317,43 @@ def resolve_work(ctx: ServiceContext, title: str, *, top: int = 5) -> Dict[str, 
                 # 相关性由 Bangumi 的排序位置体现
                 "confidence": "high" if rank < 2 else "low",
                 "matched_by": f"bangumi:{subject.get('id')}",
+                "last_choice": bool(cached_confirmed and subject.get("id") == cached.bgm_id),
             }
             candidates.append(item)
 
         if candidates:
-            candidates.sort(key=lambda item: item["rank"])
+            # 上次选过的那条排最前，其余仍按 Bangumi 的相关度排序
+            candidates.sort(key=lambda item: (not item["last_choice"], item["rank"]))
             payload["source"] = "bangumi"
             payload["candidates"] = candidates
             return payload
         payload["notes"].append("Bangumi 没有命中条目，已退回 nekoBT 模糊搜索")
     else:
-        payload["notes"].append("Bangumi 不可用（网络不通或未启用），使用 nekoBT 模糊搜索")
+        payload["notes"].append(f"Bangumi 查询失败（{bangumi_error}），已降级")
+
+    # 2.5) Bangumi 用不了时，先看有没有上次确认过的映射
+    if cached_confirmed:
+        detail = _media_detail(ctx, cached.nekobt_media_id)
+        payload["source"] = "cache"
+        payload["notes"].append("Bangumi 不可用，使用上次确认过的映射")
+        payload["candidates"] = [
+            {
+                "media_id": cached.nekobt_media_id,
+                "title": detail.get("title") or title,
+                "year": detail.get("year"),
+                "similarity": 1.0,
+                "image": detail.get("banner_url"),
+                "anilist_id": cached.anilist_id,
+                "bangumi_id": cached.bgm_id,
+                "name_cn": None,
+                "name": None,
+                "origin": "cache",
+                "confidence": "high",
+                "matched_by": "local-cache",
+                "last_choice": True,
+            }
+        ]
+        return payload
 
     # 3) 兜底：nekoBT 模糊搜索
     result: MediaSearchResult = search_media(ctx.nekobt, title, top=top)
@@ -340,7 +361,15 @@ def resolve_work(ctx: ServiceContext, title: str, *, top: int = 5) -> Dict[str, 
     payload["normalized_query"] = result.normalized_query
     payload["used_fallback"] = result.used_fallback
     payload["tried_queries"] = result.tried_queries
-    payload["candidates"] = [item.to_dict() for item in result.candidates]
+    fallback: List[Dict[str, Any]] = []
+    for item in result.candidates:
+        data = item.to_dict()
+        data["last_choice"] = bool(
+            cached_confirmed and item.media_id == cached.nekobt_media_id
+        )
+        fallback.append(data)
+    fallback.sort(key=lambda item: not item["last_choice"])
+    payload["candidates"] = fallback
     return payload
 
 

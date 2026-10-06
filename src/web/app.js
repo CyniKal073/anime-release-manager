@@ -236,6 +236,13 @@ function candidateEl(c) {
   const title = document.createElement("div");
   title.className = "t";
   title.textContent = c.name_cn ? `${c.name_cn}｜${c.title}` : c.title;
+  if (c.last_choice) {
+    const badge = document.createElement("span");
+    badge.className = "badge last-choice";
+    badge.textContent = "上次选择";
+    badge.title = "上次你选的就是这一条，可以改选其它候选";
+    title.appendChild(badge);
+  }
   info.appendChild(title);
   const metaEl = document.createElement("div");
   metaEl.className = "m";

@@ -11,7 +11,7 @@ from src.config import Settings
 from src.nekobt.client import TorrentSearchPage
 from src.qbittorrent.client import QBittorrentError
 from src.service import ServiceContext, build_context
-from src.storage import Store
+from src.storage import MediaMappingRecord, Store
 
 from tests.fakes import media_result, torrent_row
 
@@ -92,6 +92,8 @@ class FakeBangumi:
         return self.available
 
     def search_subjects(self, keyword, limit=5):
+        if not self.available:
+            raise BangumiUnavailable("Bangumi 不可达：connection timed out")
         self.calls.append(keyword)
         return self.subjects[:limit]
 
@@ -255,23 +257,59 @@ def test_search_falls_back_to_nekobt_when_bangumi_down(offline_ctx):
     body = TestClient(app).get("/api/search", params={"title": "葬送的芙莉莲"}).json()
 
     assert body["source"] == "nekobt"
-    assert any("Bangumi 不可用" in note for note in body["notes"])
+    assert any("Bangumi" in note and "降级" in note for note in body["notes"])
     assert body["candidates"][0]["media_id"] == "s462"
     # 0.5556 属于可信档；0.0 的噪声被标成 low
     assert body["candidates"][0]["confidence"] == "high"
     assert body["candidates"][1]["confidence"] == "low"
 
 
-def test_confirmed_mapping_is_used_before_any_network_call(client, ctx):
-    payload = {"input_title": "葬送的芙莉莲", "media_id": "s462", "anilist_id": 154587, "confidence": 1.0}
+def test_confirmed_mapping_is_a_hint_not_a_shortcut(client, ctx):
+    """确认过映射之后，再搜同一个名字仍要看到完整候选，只是上次那条被标记并置顶。
+
+    早期实现会直接短路成单条结果，多季作品就没法改选了。
+    """
+    payload = {
+        "input_title": "葬送的芙莉莲",
+        "media_id": "s462",
+        "anilist_id": 154587,
+        "bangumi_id": 550507,  # 对应 FakeBangumi 的第二条（第二季）
+        "confidence": 1.0,
+    }
     assert client.post("/api/mapping", json=payload).json()["ok"] is True
 
     body = client.get("/api/search", params={"title": "葬送的芙莉莲"}).json()
+
+    # 仍然走 Bangumi，候选数量不变
+    assert body["source"] == "bangumi"
+    assert len(body["candidates"]) == 2
+    assert ctx._bangumi.calls, "应当照常查询 Bangumi"
+
+    # 上次选的那条被标记并排到最前
+    assert body["candidates"][0]["last_choice"] is True
+    assert body["candidates"][0]["bangumi_id"] == 550507
+    assert body["candidates"][1]["last_choice"] is False
+
+
+def test_confirmed_mapping_is_fast_path_when_bangumi_is_down(offline_ctx):
+    """Bangumi 不可用时，已确认的映射才是兜底通道。"""
+    offline_ctx.store.save_mapping(
+        MediaMappingRecord(
+            input_title="葬送的芙莉莲",
+            nekobt_media_id="s462",
+            anilist_id=154587,
+            confidence=1.0,
+            confirmed=True,
+        )
+    )
+    app = create_app()
+    app.dependency_overrides[get_context] = lambda: offline_ctx
+    body = TestClient(app).get("/api/search", params={"title": "葬送的芙莉莲"}).json()
+
     assert body["source"] == "cache"
     assert body["candidates"][0]["media_id"] == "s462"
-    assert body["candidates"][0]["matched_by"] == "local-cache"
-    # 命中缓存后不应该再去问 Bangumi
-    assert ctx._bangumi.calls == []
+    assert body["candidates"][0]["last_choice"] is True
+    assert any("Bangumi 不可用" in note for note in body["notes"])
 
 
 def test_bridge_endpoint_resolves_media_id(client):
