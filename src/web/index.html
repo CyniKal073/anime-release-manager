@@ -20,6 +20,16 @@
 </header>
 
 <main>
+  <section class="card" id="calendarCard">
+    <h2>
+      本季连载
+      <span class="badge" id="calCount"></span>
+      <button id="reloadCalendar" class="ghost small">刷新</button>
+    </h2>
+    <p class="hint">来自 Bangumi 每日放送，点任意一部即可直接搜索。需要能访问 api.bgm.tv。</p>
+    <div id="calendar" class="calendar"></div>
+  </section>
+
   <section class="card">
     <div class="search-row">
       <input id="q" type="search" placeholder="输入动漫名称，例如：葬送的芙莉莲" autocomplete="off">

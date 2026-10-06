@@ -25,6 +25,7 @@ from ..release.matcher import ReleasePreferences, default_preferences
 from ..service import (
     ServiceContext,
     build_context,
+    calendar_view,
     confirm_mapping,
     health,
     list_releases,
@@ -174,6 +175,14 @@ def create_app() -> FastAPI:
     ) -> Dict[str, Any]:
         rows = ctx.store.list_downloads(max(1, min(limit, 200)))
         return {"items": [dict(row) for row in rows]}
+
+    @app.get("/api/calendar")
+    def api_calendar(
+        refresh: bool = False,
+        ctx: ServiceContext = Depends(get_context),
+    ) -> Dict[str, Any]:
+        """本季连载（Bangumi 每日放送）。Bangumi 不可用时返回 ok=false 而不是报错。"""
+        return calendar_view(ctx, refresh=refresh)
 
     @app.get("/api/preferences")
     def api_get_preferences(ctx: ServiceContext = Depends(get_context)) -> Dict[str, Any]:

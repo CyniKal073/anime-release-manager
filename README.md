@@ -34,12 +34,18 @@ qBittorrent WebAPI
 ## V1 本地 Web UI
 
 ```powershell
-python -m src.api.app              # 默认 http://127.0.0.1:8765
-python -m src.api.app --port 9000  # 换端口
+.\run_web.ps1                      # 默认 http://127.0.0.1:8765
+.\run_web.ps1 --port 9000          # 换端口
+.\run_web.ps1 --no-access-log      # 只保留启动日志
 ```
+
+也可以直接 `python -m src.api.app`（用脚本是为了固定 UTF-8 日志编码）。
 
 界面提供：搜索框、作品候选（带相似度）、筛选栏（分辨率/来源/编码/字幕/合集/最少做种）、
 排序切换、符合条件 / 字段未知 / 不符合 三态分页、逐条下载按钮（可选「添加后暂停」）、下载历史。
+
+首页还会显示**本季连载**（来自 Bangumi 每日放送，按星期分组，点任意一部即可搜索），
+作品候选与连载条目都带封面图。Bangumi 不可达时首页会给出提示并继续工作，不会报错。
 
 筛选逻辑与 CLI 完全共用 `src/service.py`，唯一区别是偏好可以「存为默认偏好」写进 SQLite。
 

@@ -88,3 +88,58 @@ class BangumiClient:
         if getattr(response, "status_code", 0) >= 400:
             raise BangumiError(f"Bangumi 详情失败 ({response.status_code})")
         return response.json() or {}
+
+    # ------------------------------------------------------------------ 新番
+
+    @staticmethod
+    def pick_image(images: Optional[Dict[str, Any]]) -> Optional[str]:
+        """从 images 里挑一张适合列表展示的图（优先 common）。"""
+        if not images:
+            return None
+        for key in ("common", "medium", "large", "small", "grid"):
+            url = images.get(key)
+            if url:
+                return str(url).replace("http://", "https://", 1)
+        return None
+
+    def calendar(self) -> List[Dict[str, Any]]:
+        """每日放送（正在连载的番剧），按星期分组。
+
+        返回结构已归一化，只保留界面需要的字段：
+
+            [{"weekday": 1, "weekday_cn": "星期一",
+              "items": [{"bangumi_id", "name_cn", "name", "image", "air_date", "url"}]}]
+        """
+        try:
+            response = self.session.get(
+                f"{self.base_url}/calendar", headers=self._headers(), timeout=self.timeout
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._available = False
+            self._checked_at = time.time()
+            raise BangumiUnavailable(f"Bangumi 不可达：{exc}") from exc
+        if getattr(response, "status_code", 0) >= 400:
+            raise BangumiError(f"Bangumi 每日放送失败 ({response.status_code})")
+
+        days: List[Dict[str, Any]] = []
+        for day in response.json() or []:
+            weekday = day.get("weekday") or {}
+            if isinstance(weekday, dict):
+                weekday_id = weekday.get("id")
+                weekday_cn = weekday.get("cn") or weekday.get("en")
+            else:
+                weekday_id, weekday_cn = None, str(weekday)
+            items = []
+            for item in day.get("items") or []:
+                items.append(
+                    {
+                        "bangumi_id": item.get("id"),
+                        "name_cn": item.get("name_cn") or None,
+                        "name": item.get("name"),
+                        "image": self.pick_image(item.get("images")),
+                        "air_date": item.get("air_date"),
+                        "url": item.get("url"),
+                    }
+                )
+            days.append({"weekday": weekday_id, "weekday_cn": weekday_cn, "items": items})
+        return days

@@ -70,6 +70,95 @@ async function loadHealth() {
   }
 }
 
+/* -------------------------------------------------------------- 本季连载 */
+
+async function loadCalendar(refresh) {
+  const box = $("calendar");
+  box.innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const r = await api("/api/calendar" + (refresh ? "?refresh=true" : ""));
+    if (!r.ok) {
+      box.innerHTML = "";
+      const note = document.createElement("div");
+      note.className = "empty";
+      note.textContent = r.hint || r.error || "暂时拿不到本季连载";
+      box.appendChild(note);
+      $("calCount").textContent = "";
+      return;
+    }
+    renderCalendar(r.days || []);
+  } catch (err) {
+    box.innerHTML = "";
+    const note = document.createElement("div");
+    note.className = "empty";
+    note.textContent = "加载失败：" + err.message;
+    box.appendChild(note);
+  }
+}
+
+function renderCalendar(days) {
+  const box = $("calendar");
+  box.innerHTML = "";
+  const total = days.reduce((sum, day) => sum + (day.items || []).length, 0);
+  $("calCount").textContent = total ? `${total} 部` : "";
+  days
+    .slice()
+    .sort((a, b) => (a.weekday || 0) - (b.weekday || 0))
+    .forEach((day) => {
+      if (!(day.items || []).length) return;
+      const col = document.createElement("div");
+      col.className = "cal-day";
+      const title = document.createElement("div");
+      title.className = "cal-day-title";
+      title.textContent = day.weekday_cn || (day.weekday ? `星期${day.weekday}` : "未知");
+      col.appendChild(title);
+      day.items.forEach((item) => col.appendChild(calendarItem(item)));
+      box.appendChild(col);
+    });
+}
+
+function coverEl(url, className) {
+  if (url) {
+    const img = document.createElement("img");
+    img.className = className;
+    img.loading = "lazy";
+    img.alt = "";
+    img.referrerPolicy = "no-referrer";
+    img.src = url;
+    return img;
+  }
+  const box = document.createElement("div");
+  box.className = className + " placeholder";
+  box.textContent = "无图";
+  return box;
+}
+
+function calendarItem(item) {
+  const el = document.createElement("div");
+  el.className = "cal-item";
+  el.title = "点击搜索这部作品";
+  el.appendChild(coverEl(item.image, "cover"));
+  const meta = document.createElement("div");
+  meta.className = "cal-meta";
+  const name = document.createElement("div");
+  name.className = "t";
+  name.textContent = item.name_cn || item.name || "";
+  meta.appendChild(name);
+  if (item.name_cn && item.name) {
+    const sub = document.createElement("div");
+    sub.className = "s";
+    sub.textContent = item.name;
+    meta.appendChild(sub);
+  }
+  el.appendChild(meta);
+  el.onclick = () => {
+    $("q").value = item.name_cn || item.name || "";
+    doSearch();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  return el;
+}
+
 /* ------------------------------------------------------------------ 搜索 */
 
 async function doSearch() {
@@ -121,21 +210,33 @@ function candidateEl(c) {
   const el = document.createElement("div");
   el.className = "candidate";
   if (!c.media_id) el.classList.add("disabled");
+  const row = document.createElement("div");
+  row.className = "candidate-inner";
+  if (c.image) row.appendChild(coverEl(c.image, "cover"));
+  const info = document.createElement("div");
+  info.className = "candidate-info";
   const meta = [
     c.media_id || "nekoBT 无对应媒体",
     c.year || "年份未知",
     `相似度 ${(c.similarity || 0).toFixed(4)}`,
     SOURCE_LABEL[c.origin] || c.origin || "",
   ].filter(Boolean);
-  el.innerHTML = "<div class=\"t\"></div><div class=\"m\"></div>";
-  el.querySelector(".t").textContent = c.name_cn ? `${c.name_cn}｜${c.title}` : c.title;
-  el.querySelector(".m").textContent = meta.join(" · ");
+  const title = document.createElement("div");
+  title.className = "t";
+  title.textContent = c.name_cn ? `${c.name_cn}｜${c.title}` : c.title;
+  info.appendChild(title);
+  const metaEl = document.createElement("div");
+  metaEl.className = "m";
+  metaEl.textContent = meta.join(" · ");
+  info.appendChild(metaEl);
   if (c.name && c.name !== c.title) {
     const original = document.createElement("div");
     original.className = "m";
     original.textContent = "原名：" + c.name;
-    el.appendChild(original);
+    info.appendChild(original);
   }
+  row.appendChild(info);
+  el.appendChild(row);
   if (c.media_id) {
     el.onclick = () => selectCandidate(c, el);
   }
@@ -388,6 +489,7 @@ function resetFilters() {
 window.addEventListener("DOMContentLoaded", () => {
   renderFilters();
   loadHealth();
+  loadCalendar(false);
   loadHistory();
   $("historyCard").classList.remove("hidden");
   $("searchBtn").onclick = doSearch;
@@ -398,4 +500,5 @@ window.addEventListener("DOMContentLoaded", () => {
   $("resetFilters").onclick = resetFilters;
   $("savePrefs").onclick = savePrefs;
   $("loadHistory").onclick = loadHistory;
+  $("reloadCalendar").onclick = () => loadCalendar(true);
 });

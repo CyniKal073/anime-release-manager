@@ -111,6 +111,7 @@ class MediaCandidate:
     name_cn: Optional[str] = None
     name: Optional[str] = None
     matched_by: Optional[str] = None
+    image: Optional[str] = None
 
     @classmethod
     def from_api(cls, row: Dict[str, Any]) -> "MediaCandidate":
@@ -125,6 +126,7 @@ class MediaCandidate:
             anilist_id=int(anilist_id) if anilist_id else None,
             mal_id=primary.get("id_mal"),
             genres=list(row.get("genres") or []),
+            image=row.get("banner_url"),
             raw=row,
         )
 
@@ -151,6 +153,7 @@ class MediaCandidate:
             "origin": self.origin,
             "confidence": self.confidence,
             "matched_by": self.matched_by,
+            "image": self.image,
         }
 
 

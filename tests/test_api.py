@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api.app import create_app, get_context
+from src.bangumi.client import BangumiUnavailable
 from src.config import Settings
 from src.nekobt.client import TorrentSearchPage
 from src.qbittorrent.client import QBittorrentError
@@ -94,6 +95,26 @@ class FakeBangumi:
         self.calls.append(keyword)
         return self.subjects[:limit]
 
+    def calendar(self):
+        if not self.available:
+            raise BangumiUnavailable("Bangumi 不可达：connection timed out")
+        return [
+            {
+                "weekday": 1,
+                "weekday_cn": "星期一",
+                "items": [
+                    {
+                        "bangumi_id": 400602,
+                        "name_cn": "葬送的芙莉莲",
+                        "name": "葬送のフリーレン",
+                        "image": "https://lain.bgm.tv/pic/cover/c/frieren.jpg",
+                        "air_date": "2023-09-29",
+                        "url": "https://bgm.tv/subject/400602",
+                    }
+                ],
+            }
+        ]
+
 
 @pytest.fixture
 def ctx(tmp_path):
@@ -101,6 +122,7 @@ def ctx(tmp_path):
         qbit_password="secret",
         qbit_savepath=r"D:\Anime\library",
         db_path=tmp_path / "test.db",
+        cache_dir=tmp_path / "cache",
     )
     context = ServiceContext(
         settings=settings,
@@ -117,7 +139,9 @@ def ctx(tmp_path):
 @pytest.fixture
 def offline_ctx(tmp_path):
     """Bangumi 不可用的情况。"""
-    settings = Settings(qbit_password="secret", db_path=tmp_path / "off.db")
+    settings = Settings(
+        qbit_password="secret", db_path=tmp_path / "off.db", cache_dir=tmp_path / "cache"
+    )
     context = ServiceContext(settings=settings, nekobt=FakeNekoBT(), store=Store(settings.db_path))
     context._qbit = FakeQbit()
     context._bangumi = FakeBangumi(available=False)
@@ -184,6 +208,30 @@ def test_bangumi_unavailable_does_not_fail_overall_health(offline_ctx):
     assert body["bangumi"]["error"]
     # Bangumi 属于可降级项，不影响总体
     assert body["ok"] is True
+
+
+def test_calendar_endpoint_returns_days_with_covers(client):
+    body = client.get("/api/calendar").json()
+    assert body["ok"] is True
+    assert body["days"][0]["weekday_cn"] == "星期一"
+    item = body["days"][0]["items"][0]
+    assert item["name_cn"] == "葬送的芙莉莲"
+    assert item["image"].startswith("https://")
+
+
+def test_calendar_is_cached_after_first_call(client):
+    assert client.get("/api/calendar").json()["source"] == "bangumi"
+    assert client.get("/api/calendar").json()["source"] == "cache"
+
+
+def test_calendar_degrades_when_bangumi_is_down(offline_ctx):
+    app = create_app()
+    app.dependency_overrides[get_context] = lambda: offline_ctx
+    body = TestClient(app).get("/api/calendar").json()
+
+    assert body["ok"] is False
+    assert body["days"] == []
+    assert "VPN" in body["hint"]
 
 
 def test_search_returns_candidates_with_similarity(client):

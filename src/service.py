@@ -31,10 +31,13 @@ from .release.matcher import (
 )
 from .release.models import Release
 from .release.parser import build_release
-from .storage import MediaMappingRecord, Store
+from .storage import JsonCache, MediaMappingRecord, Store
 
 #: 存进 settings 表里的默认偏好
 PREFS_KEY = "preferences"
+#: 新番日历的缓存 key 与有效期（秒）
+CALENDAR_KEY = "bangumi:calendar"
+CALENDAR_TTL = 1800
 
 
 @dataclass
@@ -44,6 +47,7 @@ class ServiceContext:
     store: Store
     _qbit: Optional[QBittorrentClient] = field(default=None, repr=False)
     _bangumi: Optional[BangumiClient] = field(default=None, repr=False)
+    _cache: Optional[JsonCache] = field(default=None, repr=False)
     #: 自检专用探针（短超时、不重试）；测试里可注入假实现
     nekobt_probe: Optional[Any] = None
     bangumi_probe: Optional[Any] = None
@@ -67,6 +71,12 @@ class ServiceContext:
                 timeout=min(self.settings.http_timeout, 12.0),
             )
         return self._bangumi
+
+    @property
+    def cache(self) -> JsonCache:
+        if self._cache is None:
+            self._cache = JsonCache(self.settings.cache_dir, ttl_seconds=CALENDAR_TTL)
+        return self._cache
 
 
 def build_context(settings: Optional[Settings] = None) -> ServiceContext:
@@ -184,6 +194,7 @@ def resolve_work(ctx: ServiceContext, title: str, *, top: int = 5) -> Dict[str, 
                 "title": detail.get("title") or title,
                 "year": detail.get("year"),
                 "similarity": 1.0,
+                "image": detail.get("banner_url"),
                 "anilist_id": cached.anilist_id,
                 "bangumi_id": cached.bgm_id,
                 "name_cn": None,
@@ -217,6 +228,7 @@ def resolve_work(ctx: ServiceContext, title: str, *, top: int = 5) -> Dict[str, 
                 # 不是这个条目和用户查询的相关性；相关性由 Bangumi 的排序
                 # 位置（rank）体现，所以置信度按 rank 判定。
                 "similarity": round(bridged.similarity, 4) if bridged else 0.0,
+                "image": BangumiClient.pick_image(subject.get("images")),
                 "media_id": bridged.media_id if bridged else None,
                 "anilist_id": bridged.anilist_id if bridged else None,
                 "origin": "bangumi",
@@ -269,6 +281,28 @@ def confirm_mapping(
         )
     )
     return {"ok": True, "input_title": input_title, "media_id": media_id}
+
+
+def calendar_view(ctx: ServiceContext, *, refresh: bool = False) -> Dict[str, Any]:
+    """本季连载（Bangumi 每日放送），带本地缓存。"""
+    if not refresh:
+        cached = ctx.cache.get(CALENDAR_KEY)
+        if cached:
+            return {"ok": True, "source": "cache", "days": cached}
+
+    try:
+        days = ctx.bangumi.calendar()
+    except Exception as exc:  # noqa: BLE001 - 可降级项，不能把首页拖挂
+        return {
+            "ok": False,
+            "source": "bangumi",
+            "days": [],
+            "error": str(exc)[:300],
+            "hint": "Bangumi 不可用（通常需要开启 VPN）；开启后刷新即可看到本季连载。",
+        }
+
+    ctx.cache.set(CALENDAR_KEY, days)
+    return {"ok": True, "source": "bangumi", "days": days}
 
 
 def releases_to_dict(release: Release) -> Dict[str, Any]:
