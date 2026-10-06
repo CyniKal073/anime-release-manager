@@ -1,53 +1,122 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+<!--
+  ============================================================================
+  动漫 Release 管理器 — 页面结构
+  ============================================================================
+
+  【怎么改】
+  · 页面上的**可见文案**（标题、按钮、提示语）直接在这个文件里改就行。
+  · 主题色、圆角、间距这类外观设置集中在 static/style.css 顶部的 :root 里。
+  · 页面逻辑（搜索、筛选、下载）在 static/app.js。
+
+  【改之前请留意】
+  带 id="..." 的元素是 JavaScript 用来取值的钩子，**可以改里面的文字，但不要改 id**。
+  比如 <input id="q"> 是搜索框、<button id="searchBtn"> 是搜索按钮，
+  改了 id 就得同步去 app.js 里改对应的 getElementById。
+  带 class="hidden" 的区块默认隐藏，由脚本在合适的时机会显示出来。
+
+  【各区块对应关系】
+  #calendarCard   本季连载（Bangumi 每日放送，可点选直接搜索）
+  .search-row     搜索框 + 搜索按钮
+  #candidatesCard 作品候选（识别结果，按置信度分组）
+  #filtersCard    筛选与排序（分辨率/来源/编码/字幕/合集/做种）
+  #resultsCard    搜索结果（Release 表格，三个分页）
+  #historyCard    下载历史
+  #toasts         右下角浮动提示（由脚本动态填充）
+  ============================================================================
+-->
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>动漫 Release 管理器</title>
-<link rel="stylesheet" href="/static/style.css">
+  <!-- 文档编码，不要改 -->
+  <meta charset="utf-8">
+  <!-- 移动端/窄窗口下的缩放行为 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 浏览器标签页标题，随意改 -->
+  <title>动漫 Release 管理器</title>
+  <!-- 样式表；静态资源不缓存，改完刷新即可生效 -->
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
+<!-- 顶栏：左侧是站点标题（这里的两行文字可直接改），右侧是服务状态（由脚本填充） -->
 <header class="topbar">
   <div class="brand">
+    <!-- 左上角的装饰符号，可以换成任意单个字符或 emoji -->
     <span class="logo">◈</span>
     <div>
+      <!-- 主标题 -->
       <h1>动漫 Release 管理器</h1>
+      <!-- 副标题：说明这条链路在做什么 -->
       <p class="sub">中文名 → nekoBT Release → qBittorrent</p>
     </div>
   </div>
+  <!-- 状态胶囊：圆点颜色由 app.js 的 loadHealth() 控制，文字会显示
+       nekoBT / Bangumi 是否正常。qBittorrent 不在打开页面时检测。 -->
   <div class="status" id="health"><span class="dot"></span><span class="txt">检查中…</span></div>
 </header>
 
 <main>
+
+  <!-- ======================================================================
+       [1] 本季连载
+       数据来自 Bangumi 每日放送（GET /api/calendar），按星期分组渲染。
+       点任意一部会把名字填进搜索框并自动搜索。
+       数据缓存 30 分钟，右上「刷新」按钮会强制拉取（?refresh=true）。
+       ====================================================================== -->
   <section class="card" id="calendarCard">
     <h2>
-      本季连载
-      <span class="badge" id="calCount"></span>
-      <button id="reloadCalendar" class="ghost small">刷新</button>
+      本季连载                <!-- 区块标题 -->
+      <span class="badge" id="calCount"></span>   <!-- 由脚本填入总数，如「102 部」 -->
+      <button id="reloadCalendar" class="ghost small">刷新</button>  <!-- 强制刷新，忽略缓存 -->
     </h2>
+    <!-- 说明文字，可自由修改 -->
     <p class="hint">来自 Bangumi 每日放送，点任意一部即可直接搜索。需要能访问 api.bgm.tv。</p>
+    <!-- 加载中 / 不可用提示 / 星期一~星期日各列，都由脚本渲染进这里 -->
     <div id="calendar" class="calendar"></div>
   </section>
 
+  <!-- ======================================================================
+       [2] 搜索框
+       输入中文名、日文原名或罗马字都可以。回车等同于点「搜索」。
+       带季数后缀会自动剥离（「无职转生 第二季」按「无职转生」检索）。
+       ====================================================================== -->
   <section class="card">
     <div class="search-row">
+      <!-- 搜索输入框。placeholder 是提示文字，可改；id="q" 不要改 -->
       <input id="q" type="search" placeholder="输入动漫名称，例如：葬送的芙莉莲" autocomplete="off">
+      <!-- 搜索按钮，文字可改 -->
       <button id="searchBtn" class="primary">搜索</button>
     </div>
+    <!-- 这行提示会被脚本覆盖成「识别来源 / 检索用标题 / 候选数量」 -->
     <p class="hint" id="searchHint">带季数后缀会自动剥离，例如「无职转生 第二季」按「无职转生」检索。</p>
   </section>
 
+  <!-- ======================================================================
+       [3] 作品候选
+       展示识别出来的作品，分「可信候选」与「低置信度」两组。
+       每条显示：中文名、nekoBT 标题、media_id、年份、相似度、识别来源。
+       点选后才会去解析该作品对应的 nekoBT 资源（惰性桥接）。
+       ====================================================================== -->
   <section class="card hidden" id="candidatesCard">
     <h2>作品候选 <span class="badge" id="candCount"></span></h2>
+    <!-- 关于「噪声」的说明，可自由修改 -->
     <p class="hint">nekoBT 的媒体搜索是模糊匹配，similarity 之后的条目基本是噪声，请确认后再继续。</p>
+    <!-- 候选卡片由脚本渲染 -->
     <div class="candidates" id="candidates"></div>
   </section>
 
+  <!-- ======================================================================
+       [4] 筛选与排序
+       筛选条件不填就是「不限」。改动任一筛选项会立刻重新拉取 Release 列表。
+       「存为默认偏好」会把当前设置写进本地 SQLite，下次打开自动带上。
+       ====================================================================== -->
   <section class="card hidden" id="filtersCard">
     <h2>筛选与排序</h2>
+    <!-- 四组选项（分辨率/来源/编码/字幕）由 app.js 顶部的 FILTERS 常量生成。
+         想增删可选项，改 app.js 里的 FILTERS 对象，不用动这里。 -->
     <div class="filter-groups" id="filterGroups"></div>
     <div class="filter-extra">
+      <!-- 合集筛选 -->
       <label>合集
         <select id="batch">
           <option value="">不限</option>
@@ -55,9 +124,11 @@
           <option value="false">只要单集</option>
         </select>
       </label>
+      <!-- 做种数下限。留空表示不限 -->
       <label>最少做种
         <input id="minSeeders" type="number" min="0" step="1" placeholder="不限">
       </label>
+      <!-- 排序方式：默认按偏好打分（1080p/BD/HEVC/简中 优先） -->
       <label>排序
         <select id="sort">
           <option value="preference">按偏好打分</option>
@@ -65,6 +136,7 @@
           <option value="size">按体积（小→大）</option>
         </select>
       </label>
+      <!-- 「添加后暂停」：勾上则提交任务但不开始下载 -->
       <label class="check">
         <input id="pausedAdd" type="checkbox"> 添加到客户端后暂停
       </label>
@@ -73,16 +145,24 @@
     </div>
   </section>
 
+  <!-- ======================================================================
+       [5] Release 结果
+       三个分页：符合条件 / 字段未知 / 不符合。
+       「字段未知」指标题里解析不出分辨率、来源等字段的条目——不猜，单独列出。
+       表格各列含义：分辨率 / 来源（BDRip·WEB-DL·WEBRip） / 视频编码 / 字幕 / 体积 / 做种 / 得分。
+       ====================================================================== -->
   <section class="card hidden" id="resultsCard">
     <h2>
       搜索结果
-      <span class="badge" id="resultSummary"></span>
+      <span class="badge" id="resultSummary"></span>   <!-- 由脚本填入各分页数量 -->
     </h2>
+    <!-- 分页标签由脚本生成 -->
     <div class="tabs" id="tabs"></div>
     <div class="table-wrap">
       <table id="releases">
         <thead>
           <tr>
+            <!-- style 里的是列宽，可按需调整 -->
             <th style="width:38px">#</th>
             <th>标题</th>
             <th style="width:70px">分辨率</th>
@@ -95,26 +175,42 @@
             <th style="width:90px">操作</th>
           </tr>
         </thead>
+        <!-- 数据行由脚本渲染；每条右侧的「下载」按钮会把任务提交给 qBittorrent
+             （未运行时会自动尝试启动） -->
         <tbody></tbody>
       </table>
     </div>
   </section>
 
+  <!-- ======================================================================
+       [6] 下载历史
+       记录每次提交的种子：时间 / 标题 / 保存目录 / 状态 / hash。
+       数据存在 data/anime_release_manager.db 的 downloads 表里。
+       ====================================================================== -->
   <section class="card hidden" id="historyCard">
     <h2>下载历史 <button id="loadHistory" class="ghost small">刷新</button></h2>
     <div class="table-wrap">
       <table id="history">
         <thead>
-          <tr><th>时间</th><th>标题</th><th>保存目录</th><th>状态</th><th>Hash</th></tr>
+          <tr>
+            <th>时间</th>
+            <th>标题</th>
+            <th>保存目录</th>
+            <th>状态</th>
+            <th>Hash</th>
+          </tr>
         </thead>
         <tbody></tbody>
       </table>
     </div>
   </section>
+
 </main>
 
+<!-- 右下角浮动提示容器，内容由 app.js 的 toast() 动态插入，这里不用改 -->
 <div id="toasts" class="toasts"></div>
 
+<!-- 页面逻辑；改完刷新浏览器即可，不会缓存 -->
 <script src="/static/app.js"></script>
 </body>
 </html>

@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
@@ -213,10 +214,18 @@ def search_media(client, raw_query: str, *, top: int = 5) -> MediaSearchResult:
     groups: List[List[MediaCandidate]] = []
     used_fallback = False
 
-    for variant in variants:
-        rows = client.search_media(variant)
-        if rows:
-            groups.append(rank_candidates(rows))
+    # 变体之间没有依赖，并行查询（每个变体一次网络往返）
+    def fetch(variant: str) -> List[Dict[str, Any]]:
+        try:
+            return client.search_media(variant) or []
+        except Exception:  # noqa: BLE001 - 单个变体失败不影响其它
+            return []
+
+    if variants:
+        with ThreadPoolExecutor(max_workers=min(len(variants), 4)) as pool:
+            for rows in pool.map(fetch, variants):
+                if rows:
+                    groups.append(rank_candidates(rows))
 
     merged = merge_candidates(groups)
     if not merged and variants and variants[0] != raw_query.strip():

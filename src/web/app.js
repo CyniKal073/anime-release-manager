@@ -235,7 +235,7 @@ function candidateEl(c) {
   }
   row.appendChild(info);
   el.appendChild(row);
-  if (c.media_id) {
+  if (c.media_id || c.needs_bridge) {
     el.onclick = () => selectCandidate(c, el);
   }
   return el;
@@ -244,6 +244,37 @@ function candidateEl(c) {
 async function selectCandidate(candidate, el) {
   document.querySelectorAll(".candidate").forEach((n) => n.classList.remove("active"));
   el.classList.add("active");
+
+  // 惰性桥接：Bangumi 候选在搜索阶段还没有 media_id，点选时才解析
+  if (!candidate.media_id && candidate.needs_bridge) {
+    const original = el.querySelector(".m");
+    if (original) original.textContent = "正在解析 nekoBT 资源…";
+    try {
+      const r = await api("/api/bridge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: candidate.name }),
+      });
+      if (!r.ok) {
+        toast(r.error || "解析失败", "bad");
+        if (original) original.textContent = "未找到 nekoBT 资源";
+        el.classList.remove("active");
+        return;
+      }
+      candidate.media_id = r.media_id;
+      candidate.similarity = r.similarity;
+      candidate.anilist_id = r.anilist_id;
+      if (r.image && !candidate.image) candidate.image = r.image;
+    } catch (err) {
+      toast("解析失败：" + err.message, "bad");
+      el.classList.remove("active");
+      return;
+    }
+  }
+  if (!candidate.media_id) {
+    toast("这个候选没有对应的 nekoBT 资源");
+    return;
+  }
   state.selected = candidate;
   // 把这次确认沉淀到本地映射，下次同一输入直接命中缓存
   try {

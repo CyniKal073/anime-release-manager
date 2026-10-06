@@ -23,6 +23,7 @@ from ..qbittorrent.client import QBittorrentError
 from ..release.matcher import ReleasePreferences, default_preferences
 from ..service import (
     ServiceContext,
+    bridge_candidate,
     build_context,
     calendar_view,
     confirm_mapping,
@@ -74,6 +75,10 @@ class MappingRequest(BaseModel):
     confidence: float = 1.0
 
 
+class BridgeRequest(BaseModel):
+    name: str
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Anime Release Manager", version="0.2.0")
 
@@ -108,6 +113,14 @@ def create_app() -> FastAPI:
             bangumi_id=req.bangumi_id,
             confidence=req.confidence,
         )
+
+    @app.post("/api/bridge")
+    def api_bridge(
+        req: BridgeRequest,
+        ctx: ServiceContext = Depends(get_context),
+    ) -> Dict[str, Any]:
+        """把 Bangumi 条目解析成 nekoBT media_id（惰性桥接，点选时才调用）。"""
+        return bridge_candidate(ctx, req.name)
 
     @app.get("/api/media/{media_id}/releases")
     def api_releases(

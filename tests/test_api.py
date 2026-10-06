@@ -240,7 +240,9 @@ def test_search_returns_candidates_with_similarity(client):
     body = res.json()
     assert body["source"] == "bangumi"
     first = body["candidates"][0]
-    assert first["media_id"] == "s462"
+    # 惰性桥接：搜索阶段先不解析 media_id，点选时才去 nekoBT
+    assert first["media_id"] is None
+    assert first["needs_bridge"] is True
     assert first["confidence"] == "high"
     assert first["name_cn"] == "败犬女主太多了！"
     assert first["origin"] == "bangumi"
@@ -272,17 +274,22 @@ def test_confirmed_mapping_is_used_before_any_network_call(client, ctx):
     assert ctx._bangumi.calls == []
 
 
-def test_bangumi_candidate_without_nekobt_match_is_marked(offline_ctx):
-    ctx = offline_ctx
-    ctx._bangumi = FakeBangumi(subjects=[{"id": 1, "name_cn": "某个作品", "name": "", "date": None}])
-    ctx.nekobt.media_rows = []
-    app = create_app()
-    app.dependency_overrides[get_context] = lambda: ctx
-    body = TestClient(app).get("/api/search", params={"title": "某个作品"}).json()
+def test_bridge_endpoint_resolves_media_id(client):
+    body = client.post("/api/bridge", json={"name": "負けヒロインが多すぎる！"}).json()
+    assert body["ok"] is True
+    assert body["media_id"] == "s462"  # FakeNekoBT 固定返回 s462
 
-    # 桥接失败 → 退回 nekoBT 模糊搜索
-    assert body["source"] == "nekobt"
-    assert any("没找到对应媒体" in note for note in body["notes"])
+
+def test_bridge_endpoint_reports_failure(client, ctx):
+    ctx.nekobt.media_rows = []
+    body = client.post("/api/bridge", json={"name": "不存在的作品"}).json()
+    assert body["ok"] is False
+    assert "没找到" in body["error"]
+
+
+def test_bridge_endpoint_rejects_blank_name(client):
+    body = client.post("/api/bridge", json={"name": "   "}).json()
+    assert body["ok"] is False
 
 
 def test_search_rejects_blank_title(client):
