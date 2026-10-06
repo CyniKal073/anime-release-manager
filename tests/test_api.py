@@ -117,7 +117,11 @@ class FakeBangumi:
 
 
 @pytest.fixture
-def ctx(tmp_path):
+def ctx(tmp_path, monkeypatch):
+    # 下载流程里的「按需启动 qBittorrent」在测试中必须屏蔽，否则会真的去启动客户端
+    monkeypatch.setattr(
+        "src.service.ensure_running", lambda settings, **kwargs: {"ok": True, "launched": False}
+    )
     settings = Settings(
         qbit_password="secret",
         qbit_savepath=r"D:\Anime\library",
@@ -137,8 +141,11 @@ def ctx(tmp_path):
 
 
 @pytest.fixture
-def offline_ctx(tmp_path):
+def offline_ctx(tmp_path, monkeypatch):
     """Bangumi 不可用的情况。"""
+    monkeypatch.setattr(
+        "src.service.ensure_running", lambda settings, **kwargs: {"ok": True, "launched": False}
+    )
     settings = Settings(
         qbit_password="secret", db_path=tmp_path / "off.db", cache_dir=tmp_path / "cache"
     )
@@ -168,35 +175,28 @@ def test_health_reports_both_services(client):
     assert res.status_code == 200
     body = res.json()
     assert body["ok"] is True
-    assert body["qbittorrent"]["webapi_version"] == "2.9.3"
-    assert body["qbittorrent"]["endpoints"]["pause"] == "ok"
     assert body["bangumi"]["ok"] is True
+    # 打开页面时不再探测 qBittorrent
+    assert body["qbittorrent"]["checked"] is False
 
 
-def test_health_returns_200_even_when_qbittorrent_is_down(tmp_path):
-    """连接被拒不能变成 500 —— 这正是用户遇到的问题。"""
-
-    class BrokenQbit:
-        def webapi_version(self):
-            raise QBittorrentError(
-                "连不上 qBittorrent（http://127.0.0.1:8081）：Connection refused"
-            )
-
-    settings = Settings(qbit_password="secret", db_path=tmp_path / "h.db")
+def test_health_never_touches_qbittorrent(tmp_path, monkeypatch):
+    """qBittorrent 没运行也不该影响自检——它只在下载时才需要。"""
+    monkeypatch.setattr(
+        "src.service.ensure_running", lambda settings, **kwargs: {"ok": True, "launched": False}
+    )
+    settings = Settings(qbit_password="", db_path=tmp_path / "h.db", cache_dir=tmp_path / "c")
     context = ServiceContext(settings=settings, nekobt=FakeNekoBT(), store=Store(settings.db_path))
-    context._qbit = BrokenQbit()
     context.nekobt_probe = context.nekobt
     context.bangumi_probe = FakeBangumi()
-
     app = create_app()
     app.dependency_overrides[get_context] = lambda: context
     res = TestClient(app).get("/api/health")
 
     assert res.status_code == 200
     body = res.json()
-    assert body["ok"] is False
-    assert body["qbittorrent"]["ok"] is False
-    assert "连不上" in body["qbittorrent"]["error"]
+    assert body["ok"] is True
+    assert body["qbittorrent"]["checked"] is False
 
 
 def test_bangumi_unavailable_does_not_fail_overall_health(offline_ctx):

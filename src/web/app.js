@@ -52,17 +52,15 @@ async function loadHealth() {
     const r = await api("/api/health");
     const n = r.nekobt || {};
     const b = r.bangumi || {};
-    const q = r.qbittorrent || {};
     const parts = [
       `nekoBT ${n.ok ? "正常" : "异常"}`,
       `Bangumi ${b.ok ? "正常" : "不可用"}`,
-      `qBittorrent ${q.ok ? (q.app_version || "正常") : "未连接"}`,
+      "qBittorrent 下载时按需启动",
     ];
     el.className = "status " + (r.ok ? "ok" : "bad");
     el.querySelector(".txt").textContent = parts.join(" · ");
     if (!r.ok) {
       if (!n.ok && n.error) toast("nekoBT：" + n.error, "bad");
-      if (!q.ok && q.error) toast("qBittorrent：" + q.error, "bad");
     }
   } catch (err) {
     el.className = "status bad";
@@ -415,8 +413,9 @@ async function doDownload(rel, btn) {
       }),
     });
     btn.textContent = "已提交";
+    const launchNote = r.launched_client ? "（已自动启动 qBittorrent）" : "";
     toast(
-      `已添加到 qBittorrent：${r.filename}\n保存目录：${r.save_path}` +
+      `已添加到 qBittorrent${launchNote}：${r.filename}\n保存目录：${r.save_path}` +
       (r.paused ? "（暂停中，需手动开始）" : ""),
       "ok"
     );

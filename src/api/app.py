@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..config import ConfigError, Settings, load_dotenv_best_effort
@@ -201,15 +200,26 @@ def create_app() -> FastAPI:
         save_preferences(ctx.store, prefs)
         return {"ok": True, "preferences": preferences_to_dict(prefs)}
 
-    if WEB_DIR.exists():
-        app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+    @app.get("/static/{path:path}")
+    def static_file(path: str) -> FileResponse:
+        """本地工具，静态资源一律不缓存。
+
+        用 StaticFiles 的话缓存会咬人：改了 app.js / style.css 但版本号没跟着
+        改，浏览器就一直用旧的，表现为「新功能看不见」。这里直接关掉缓存。
+        """
+        root = WEB_DIR.resolve()
+        target = (root / path).resolve()
+        if not str(target).startswith(str(root)) or not target.is_file():
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(target, headers={"Cache-Control": "no-store"})
 
     @app.get("/")
     def index() -> FileResponse:
         index_file = WEB_DIR / "index.html"
         if not index_file.exists():
             raise HTTPException(status_code=500, detail=f"缺少 {index_file}")
-        return FileResponse(index_file)
+        # 页面结构会随版本变化，缓存住旧 HTML 会让新功能看不见
+        return FileResponse(index_file, headers={"Cache-Control": "no-store"})
 
     return app
 

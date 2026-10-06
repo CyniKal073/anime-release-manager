@@ -22,6 +22,7 @@ from .nekobt.media import (
     search_media,
 )
 from .qbittorrent.client import QBittorrentClient, QBittorrentError
+from .qbittorrent.launcher import ensure_running
 from .release.matcher import (
     FilterResult,
     ReleasePreferences,
@@ -407,6 +408,12 @@ def submit_download(
     settings = ctx.settings
     settings.require_download_settings()
 
+    # 只有真要下载时才碰 qBittorrent：没在跑就尝试把它拉起来
+    ready = ensure_running(settings)
+    if not ready.get("ok"):
+        raise QBittorrentError(ready.get("error") or "qBittorrent 未就绪")
+    launched = bool(ready.get("launched"))
+
     content, filename = ctx.nekobt.download_torrent(torrent_id, public=True)
     target = save_path or settings.qbit_savepath
 
@@ -441,6 +448,7 @@ def submit_download(
 
     return {
         "ok": True,
+        "launched_client": launched,
         "torrent_id": torrent_id,
         "filename": filename,
         "size": len(content),
@@ -478,19 +486,6 @@ def _probe_bangumi(ctx: ServiceContext) -> Dict[str, Any]:
     }
 
 
-def _probe_qbittorrent(ctx: ServiceContext) -> Dict[str, Any]:
-    settings = ctx.settings
-    settings.require_download_settings()
-    qbit = ctx.qbit
-    return {
-        "ok": True,
-        "webapi_version": qbit.webapi_version(),
-        "app_version": qbit.app_version(),
-        "endpoints": qbit.probe_task_endpoints(),
-        "url": settings.qbit_url,
-    }
-
-
 def health(ctx: ServiceContext) -> Dict[str, Any]:
     """自检。
 
@@ -503,7 +498,6 @@ def health(ctx: ServiceContext) -> Dict[str, Any]:
     probes = {
         "nekobt": _probe_nekobt,
         "bangumi": _probe_bangumi,
-        "qbittorrent": _probe_qbittorrent,
     }
     report: Dict[str, Any] = {}
     with ThreadPoolExecutor(max_workers=len(probes)) as pool:
@@ -514,6 +508,9 @@ def health(ctx: ServiceContext) -> Dict[str, Any]:
             except Exception as exc:  # noqa: BLE001 - 自检不能抛出去
                 report[name] = {"ok": False, "error": str(exc)[:400]}
 
-    # Bangumi 属于可降级项，不参与总体 ok
-    report["ok"] = bool(report["nekobt"].get("ok") and report["qbittorrent"].get("ok"))
+    # 只探测「识别链路」是否可用。
+    # qBittorrent 不再在打开页面时检查——它只在真正下载时才需要，
+    # 到那时由 qbittorrent/launcher.ensure_running() 按需拉起。
+    report["ok"] = bool(report["nekobt"].get("ok"))
+    report["qbittorrent"] = {"checked": False, "hint": "仅在下载时检查，未运行会自动尝试启动"}
     return report
