@@ -104,15 +104,37 @@ function renderCalendar(days) {
     .sort((a, b) => (a.weekday || 0) - (b.weekday || 0))
     .forEach((day) => {
       if (!(day.items || []).length) return;
-      const col = document.createElement("div");
-      col.className = "cal-day";
+      const row = document.createElement("div");
+      row.className = "cal-row";
       const title = document.createElement("div");
-      title.className = "cal-day-title";
-      title.textContent = day.weekday_cn || (day.weekday ? `星期${day.weekday}` : "未知");
-      col.appendChild(title);
-      day.items.forEach((item) => col.appendChild(calendarItem(item)));
-      box.appendChild(col);
+      title.className = "cal-row-title";
+      title.textContent = WEEKDAY_LABEL[day.weekday] || day.weekday_cn || "未知";
+      row.appendChild(title);
+
+      // 这一行横向滑动，避免整块被拉得很高
+      const strip = document.createElement("div");
+      strip.className = "cal-strip";
+      day.items.forEach((item) => strip.appendChild(calendarItem(item)));
+      enableHorizontalWheel(strip);
+      row.appendChild(strip);
+      box.appendChild(row);
     });
+}
+
+//: 周一到周日的短标签（Bangumi 的 weekday：1=周一 … 7=周日）
+const WEEKDAY_LABEL = { 1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日" };
+
+/** 让鼠标滚轮在这一行里变成横向滑动（Windows 上原生要按 Shift+滚轮）。 */
+function enableHorizontalWheel(strip) {
+  strip.addEventListener(
+    "wheel",
+    (event) => {
+      if (event.deltaY === 0) return;
+      event.preventDefault();
+      strip.scrollLeft += event.deltaY;
+    },
+    { passive: false }
+  );
 }
 
 function coverEl(url, className) {
@@ -134,21 +156,13 @@ function coverEl(url, className) {
 function calendarItem(item) {
   const el = document.createElement("div");
   el.className = "cal-item";
-  el.title = "点击搜索这部作品";
+  const label = item.name_cn || item.name || "";
+  el.title = `${label}\n（点击搜索这部作品）`;
   el.appendChild(coverEl(item.image, "cover"));
-  const meta = document.createElement("div");
-  meta.className = "cal-meta";
   const name = document.createElement("div");
-  name.className = "t";
-  name.textContent = item.name_cn || item.name || "";
-  meta.appendChild(name);
-  if (item.name_cn && item.name) {
-    const sub = document.createElement("div");
-    sub.className = "s";
-    sub.textContent = item.name;
-    meta.appendChild(sub);
-  }
-  el.appendChild(meta);
+  name.className = "cal-name";
+  name.textContent = label;
+  el.appendChild(name);
   el.onclick = () => {
     $("q").value = item.name_cn || item.name || "";
     doSearch();
@@ -519,6 +533,7 @@ function resetFilters() {
 window.addEventListener("DOMContentLoaded", () => {
   renderFilters();
   loadHealth();
+  applyCalendarCollapsed(localStorage.getItem("calendarCollapsed") === "1");
   loadCalendar(false);
   loadHistory();
   $("historyCard").classList.remove("hidden");
@@ -531,4 +546,16 @@ window.addEventListener("DOMContentLoaded", () => {
   $("savePrefs").onclick = savePrefs;
   $("loadHistory").onclick = loadHistory;
   $("reloadCalendar").onclick = () => loadCalendar(true);
+  $("toggleCalendar").onclick = () => {
+    const collapsed = !$("calendar").classList.contains("collapsed");
+    applyCalendarCollapsed(collapsed);
+    localStorage.setItem("calendarCollapsed", collapsed ? "1" : "0");
+    $("toggleCalendar").textContent = collapsed ? "展开" : "收起";
+  };
 });
+
+/** 收起/展开连载区：收起后只留标题一行，方便直接够到下面的搜索栏。 */
+function applyCalendarCollapsed(collapsed) {
+  $("calendar").classList.toggle("collapsed", collapsed);
+  $("toggleCalendar").textContent = collapsed ? "展开" : "收起";
+}

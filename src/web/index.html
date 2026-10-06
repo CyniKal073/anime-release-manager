@@ -32,7 +32,7 @@
   <!-- 移动端/窄窗口下的缩放行为 -->
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!-- 浏览器标签页标题，随意改 -->
-  <title>动漫 Release 管理器</title>
+  <title>CyniKal 的动漫 Release 管理器</title>
   <!-- 样式表；静态资源不缓存，改完刷新即可生效 -->
   <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -45,9 +45,9 @@
     <span class="logo">◈</span>
     <div>
       <!-- 主标题 -->
-      <h1>动漫 Release 管理器</h1>
+      <h1>CyniKal 的动漫 Release 管理器</h1>
       <!-- 副标题：说明这条链路在做什么 -->
-      <p class="sub">中文名 → nekoBT Release → qBittorrent</p>
+      <p class="sub">Bangumi → nekoBT Release → qBittorrent</p>
     </div>
   </div>
   <!-- 状态胶囊：圆点颜色由 app.js 的 loadHealth() 控制，文字会显示
@@ -67,11 +67,14 @@
     <h2>
       本季连载                <!-- 区块标题 -->
       <span class="badge" id="calCount"></span>   <!-- 由脚本填入总数，如「102 部」 -->
+      <!-- 收起/展开：收起后整块只剩一行，方便直接够到下面的搜索栏。
+           状态记在浏览器本地，下次打开保持 -->
+      <button id="toggleCalendar" class="ghost small">收起</button>
       <button id="reloadCalendar" class="ghost small">刷新</button>  <!-- 强制刷新，忽略缓存 -->
     </h2>
     <!-- 说明文字，可自由修改 -->
-    <p class="hint">来自 Bangumi 每日放送，点任意一部即可直接搜索。需要能访问 api.bgm.tv。</p>
-    <!-- 加载中 / 不可用提示 / 星期一~星期日各列，都由脚本渲染进这里 -->
+    <p class="hint">来自 Bangumi 每日放送，周一至周日各一行，每行可左右滑动。点任意一部即可直接搜索。</p>
+    <!-- 加载中 / 不可用提示 / 周一~周日各行，都由脚本渲染进这里 -->
     <div id="calendar" class="calendar"></div>
   </section>
 
@@ -83,12 +86,12 @@
   <section class="card">
     <div class="search-row">
       <!-- 搜索输入框。placeholder 是提示文字，可改；id="q" 不要改 -->
-      <input id="q" type="search" placeholder="输入动漫名称，例如：葬送的芙莉莲" autocomplete="off">
+      <input id="q" type="search" placeholder="输入动漫名称，例如：败犬女主太多了！" autocomplete="off">
       <!-- 搜索按钮，文字可改 -->
       <button id="searchBtn" class="primary">搜索</button>
     </div>
     <!-- 这行提示会被脚本覆盖成「识别来源 / 检索用标题 / 候选数量」 -->
-    <p class="hint" id="searchHint">带季数后缀会自动剥离，例如「无职转生 第二季」按「无职转生」检索。</p>
+    <p class="hint" id="searchHint">带季数后缀会自动剥离，例如「轻音少女 第二季」按「轻音少女」检索。</p>
   </section>
 
   <!-- ======================================================================
@@ -100,7 +103,7 @@
   <section class="card hidden" id="candidatesCard">
     <h2>作品候选 <span class="badge" id="candCount"></span></h2>
     <!-- 关于「噪声」的说明，可自由修改 -->
-    <p class="hint">nekoBT 的媒体搜索是模糊匹配，similarity 之后的条目基本是噪声，请确认后再继续。</p>
+    <p class="hint">nekoBT 的媒体搜索是模糊匹配。。</p>
     <!-- 候选卡片由脚本渲染 -->
     <div class="candidates" id="candidates"></div>
   </section>
