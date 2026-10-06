@@ -7,6 +7,7 @@ JSON 的普通字典，避免把业务逻辑写进路由或 CLI 里。
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -43,6 +44,9 @@ class ServiceContext:
     store: Store
     _qbit: Optional[QBittorrentClient] = field(default=None, repr=False)
     _bangumi: Optional[BangumiClient] = field(default=None, repr=False)
+    #: 自检专用探针（短超时、不重试）；测试里可注入假实现
+    nekobt_probe: Optional[Any] = None
+    bangumi_probe: Optional[Any] = None
 
     @property
     def qbit(self) -> QBittorrentClient:
@@ -412,30 +416,70 @@ def submit_download(
     }
 
 
+def _probe_nekobt(ctx: ServiceContext) -> Dict[str, Any]:
+    settings = ctx.settings
+    probe = ctx.nekobt_probe or NekoBTClient(
+        settings.nekobt_base_url,
+        api_key=settings.nekobt_api_key,
+        timeout=min(settings.http_timeout, 6.0),
+        retries=1,
+        user_agent=settings.user_agent,
+    )
+    rows = probe.search_media("葬送的芙莉莲", limit=1)
+    return {"ok": True, "sample": (rows[0].get("title") if rows else None)}
+
+
+def _probe_bangumi(ctx: ServiceContext) -> Dict[str, Any]:
+    settings = ctx.settings
+    probe = ctx.bangumi_probe or BangumiClient(
+        user_agent=f"{settings.user_agent} (https://github.com/CyniKal073)",
+        timeout=5.0,
+        availability_ttl=0,
+    )
+    available = probe.is_available(refresh=True)
+    return {
+        "ok": available,
+        "url": getattr(probe, "base_url", "https://api.bgm.tv"),
+        "error": None if available else "无法访问 api.bgm.tv（通常需要开启 VPN）",
+    }
+
+
+def _probe_qbittorrent(ctx: ServiceContext) -> Dict[str, Any]:
+    settings = ctx.settings
+    settings.require_download_settings()
+    qbit = ctx.qbit
+    return {
+        "ok": True,
+        "webapi_version": qbit.webapi_version(),
+        "app_version": qbit.app_version(),
+        "endpoints": qbit.probe_task_endpoints(),
+        "url": settings.qbit_url,
+    }
+
+
 def health(ctx: ServiceContext) -> Dict[str, Any]:
-    report: Dict[str, Any] = {"nekobt": {}, "qbittorrent": {}}
+    """自检。
 
-    try:
-        rows = ctx.nekobt.search_media("葬送的芙莉莲", limit=1)
-        report["nekobt"] = {"ok": True, "sample": (rows[0].get("title") if rows else None)}
-    except NekoBTError as exc:
-        report["nekobt"] = {"ok": False, "error": str(exc)}
+    设计约束：
 
-    try:
-        ctx.settings.require_download_settings()
-    except Exception as exc:  # noqa: BLE001 - ConfigError
-        report["qbittorrent"] = {"ok": False, "error": str(exc)}
-    else:
-        try:
-            report["qbittorrent"] = {
-                "ok": True,
-                "webapi_version": ctx.qbit.webapi_version(),
-                "app_version": ctx.qbit.app_version(),
-                "endpoints": ctx.qbit.probe_task_endpoints(),
-                "url": ctx.settings.qbit_url,
-            }
-        except QBittorrentError as exc:
-            report["qbittorrent"] = {"ok": False, "error": str(exc)}
+    * **任何一项失败都不能让接口报 5xx** —— 页面一打开就会调它；
+    * 每项用短超时、不重试的探针，并且 catch 到最宽；
+    * 三项并发探测，否则 nekoBT 与 Bangumi 都不可达时要串行等十几秒。
+    """
+    probes = {
+        "nekobt": _probe_nekobt,
+        "bangumi": _probe_bangumi,
+        "qbittorrent": _probe_qbittorrent,
+    }
+    report: Dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=len(probes)) as pool:
+        futures = {name: pool.submit(func, ctx) for name, func in probes.items()}
+        for name, future in futures.items():
+            try:
+                report[name] = future.result()
+            except Exception as exc:  # noqa: BLE001 - 自检不能抛出去
+                report[name] = {"ok": False, "error": str(exc)[:400]}
 
+    # Bangumi 属于可降级项，不参与总体 ok
     report["ok"] = bool(report["nekobt"].get("ok") and report["qbittorrent"].get("ok"))
     return report

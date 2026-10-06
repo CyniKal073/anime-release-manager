@@ -46,16 +46,23 @@ function toast(message, kind) {
 
 async function loadHealth() {
   const el = $("health");
+  el.className = "status";
+  el.querySelector(".txt").textContent = "检查中…";
   try {
     const r = await api("/api/health");
-    const n = r.nekobt, q = r.qbittorrent;
+    const n = r.nekobt || {};
+    const b = r.bangumi || {};
+    const q = r.qbittorrent || {};
+    const parts = [
+      `nekoBT ${n.ok ? "正常" : "异常"}`,
+      `Bangumi ${b.ok ? "正常" : "不可用"}`,
+      `qBittorrent ${q.ok ? (q.app_version || "正常") : "未连接"}`,
+    ];
     el.className = "status " + (r.ok ? "ok" : "bad");
-    el.querySelector(".txt").textContent = r.ok
-      ? `nekoBT 正常 · qBittorrent ${q.app_version || ""} (WebAPI ${q.webapi_version || ""})`
-      : `nekoBT ${n.ok ? "正常" : "异常"} · qBittorrent ${q.ok ? "正常" : "未连接"}`;
+    el.querySelector(".txt").textContent = parts.join(" · ");
     if (!r.ok) {
-      if (!n.ok) toast("nekoBT：" + n.error, "bad");
-      if (!q.ok) toast("qBittorrent：" + q.error, "bad");
+      if (!n.ok && n.error) toast("nekoBT：" + n.error, "bad");
+      if (!q.ok && q.error) toast("qBittorrent：" + q.error, "bad");
     }
   } catch (err) {
     el.className = "status bad";

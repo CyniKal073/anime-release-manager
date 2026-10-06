@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from src.api.app import create_app, get_context
 from src.config import Settings
 from src.nekobt.client import TorrentSearchPage
+from src.qbittorrent.client import QBittorrentError
 from src.service import ServiceContext, build_context
 from src.storage import Store
 
@@ -66,6 +67,8 @@ class FakeQbit:
 
 
 class FakeBangumi:
+    base_url = "https://api.bgm.tv"
+
     def __init__(self, subjects=None, available=True):
         self.available = available
         self.subjects = subjects if subjects is not None else [
@@ -106,6 +109,8 @@ def ctx(tmp_path):
     )
     context._qbit = FakeQbit()
     context._bangumi = FakeBangumi()
+    context.nekobt_probe = context.nekobt
+    context.bangumi_probe = context._bangumi
     return context
 
 
@@ -116,6 +121,8 @@ def offline_ctx(tmp_path):
     context = ServiceContext(settings=settings, nekobt=FakeNekoBT(), store=Store(settings.db_path))
     context._qbit = FakeQbit()
     context._bangumi = FakeBangumi(available=False)
+    context.nekobt_probe = context.nekobt
+    context.bangumi_probe = context._bangumi
     return context
 
 
@@ -139,6 +146,44 @@ def test_health_reports_both_services(client):
     assert body["ok"] is True
     assert body["qbittorrent"]["webapi_version"] == "2.9.3"
     assert body["qbittorrent"]["endpoints"]["pause"] == "ok"
+    assert body["bangumi"]["ok"] is True
+
+
+def test_health_returns_200_even_when_qbittorrent_is_down(tmp_path):
+    """连接被拒不能变成 500 —— 这正是用户遇到的问题。"""
+
+    class BrokenQbit:
+        def webapi_version(self):
+            raise QBittorrentError(
+                "连不上 qBittorrent（http://127.0.0.1:8081）：Connection refused"
+            )
+
+    settings = Settings(qbit_password="secret", db_path=tmp_path / "h.db")
+    context = ServiceContext(settings=settings, nekobt=FakeNekoBT(), store=Store(settings.db_path))
+    context._qbit = BrokenQbit()
+    context.nekobt_probe = context.nekobt
+    context.bangumi_probe = FakeBangumi()
+
+    app = create_app()
+    app.dependency_overrides[get_context] = lambda: context
+    res = TestClient(app).get("/api/health")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is False
+    assert body["qbittorrent"]["ok"] is False
+    assert "连不上" in body["qbittorrent"]["error"]
+
+
+def test_bangumi_unavailable_does_not_fail_overall_health(offline_ctx):
+    app = create_app()
+    app.dependency_overrides[get_context] = lambda: offline_ctx
+    body = TestClient(app).get("/api/health").json()
+
+    assert body["bangumi"]["ok"] is False
+    assert body["bangumi"]["error"]
+    # Bangumi 属于可降级项，不影响总体
+    assert body["ok"] is True
 
 
 def test_search_returns_candidates_with_similarity(client):

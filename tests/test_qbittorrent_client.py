@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import requests
 
 from src.qbittorrent.client import QBittorrentClient, QBittorrentError
 
@@ -156,3 +157,22 @@ def test_403_on_task_triggers_relogin():
     client.add_torrent(torrent_bytes=b"d4:infod4:name4:teste")
     assert state["logins"] == 2
     assert state["adds"] == 2
+
+
+def test_connection_error_becomes_readable_qbittorrent_error():
+    """客户端没启动时抛的是 requests 的连接异常，必须转成可读错误，否则会冒成 500。"""
+
+    class BoomSession:
+        def request(self, *args, **kwargs):
+            raise requests.ConnectionError("Connection refused")
+
+        def post(self, *args, **kwargs):
+            raise requests.ConnectionError("Connection refused")
+
+    client = QBittorrentClient("http://127.0.0.1:8081", session=BoomSession(), timeout=1)
+    with pytest.raises(QBittorrentError) as excinfo:
+        client.webapi_version()
+
+    message = str(excinfo.value)
+    assert "连不上 qBittorrent" in message
+    assert "Web UI" in message or "http://127.0.0.1:8081" in message

@@ -52,12 +52,18 @@ class QBittorrentClient:
         return {"Referer": self.url, "Origin": self.url}
 
     def login(self) -> None:
-        response = self.session.post(
-            f"{self.url}/api/v2/auth/login",
-            data={"username": self.username, "password": self.password},
-            headers=self._base_headers(),
-            timeout=self.timeout,
-        )
+        try:
+            response = self.session.post(
+                f"{self.url}/api/v2/auth/login",
+                data={"username": self.username, "password": self.password},
+                headers=self._base_headers(),
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            raise QBittorrentError(
+                f"连不上 qBittorrent（{self.url}）：{exc}\n"
+                "  请确认客户端已启动，且 工具 → 选项 → Web UI 已启用、端口与 .env 中的 QBIT_URL 一致。"
+            ) from exc
         status = getattr(response, "status_code", 200)
         body = (getattr(response, "text", "") or "").strip()
         if status == 403 or body == "Fails.":
@@ -77,18 +83,25 @@ class QBittorrentClient:
     def _request(self, method: str, path: str, **kwargs: Any):
         self._ensure_login()
         headers = {**self._base_headers(), **kwargs.pop("headers", {})}
-        response = self.session.request(
-            method, f"{self.url}{path}", headers=headers, timeout=self.timeout, **kwargs
-        )
+        try:
+            response = self.session.request(
+                method, f"{self.url}{path}", headers=headers, timeout=self.timeout, **kwargs
+            )
+        except requests.RequestException as exc:
+            # 连接被拒/超时也要变成可识别的错误，否则会一路冒成 HTTP 500
+            raise QBittorrentError(f"连不上 qBittorrent（{self.url}）：{exc}") from exc
         status = getattr(response, "status_code", 200)
         if status == 403:
             # SID 过期或被 CSRF 拒绝，重新登录一次
             self._logged_in = False
             self.login()
             headers = {**self._base_headers(), **kwargs.pop("headers", {})}
-            response = self.session.request(
-                method, f"{self.url}{path}", headers=headers, timeout=self.timeout, **kwargs
-            )
+            try:
+                response = self.session.request(
+                    method, f"{self.url}{path}", headers=headers, timeout=self.timeout, **kwargs
+                )
+            except requests.RequestException as exc:
+                raise QBittorrentError(f"连不上 qBittorrent（{self.url}）：{exc}") from exc
             status = getattr(response, "status_code", 200)
         if status >= 400:
             raise QBittorrentError(

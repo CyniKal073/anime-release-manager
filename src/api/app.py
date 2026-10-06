@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -214,9 +215,20 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--reload", action="store_true")
+    parser.add_argument("--no-access-log", action="store_true", help="关闭每条请求的访问日志")
     args = parser.parse_args()
 
     load_dotenv_best_effort()
+
+    # 日志被重定向到文件时，中文和 ANSI 颜色码都会变成乱码。
+    # 这里固定 UTF-8，并在下面关掉颜色输出。
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        try:
+            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
+
     print(f"Web UI: http://{args.host}:{args.port}")
     uvicorn.run(
         "src.api.app:app",
@@ -224,6 +236,8 @@ def main() -> int:
         port=args.port,
         reload=args.reload,
         log_level="info",
+        use_colors=False,
+        access_log=not args.no_access_log,
     )
     return 0
 
