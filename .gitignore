@@ -7,6 +7,20 @@ __pycache__/
 venv/
 *.torrent
 
+# 下载目录：里面是几百 MB 起的视频，绝对不能入库
+library/
+
+# 视频/字幕产物（万一输出到了别处也不会被误提交）
+*.mkv
+*.mp4
+*.m4v
+*.ts
+*.m2ts
+*.avi
+*.ass
+*.srt
+*.sup
+
 # 凭证文件：只应存在于本地，绝不入库
 docs/*api-key*.txt
 *api-key*.txt
