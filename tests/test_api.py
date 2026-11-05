@@ -657,8 +657,9 @@ def test_batch_embed_passes_replace_flag_through(client, monkeypatch, tmp_path):
 class CountingAssrt:
     """记下每次下载，顺便能按 url 模拟失败。"""
 
-    def __init__(self, payload=b"[Script Info]", fail_on=()):
+    def __init__(self, payload=b"[Script Info]", fail_on=(), payloads=None):
         self.payload = payload
+        self.payloads = payloads or {}
         self.fail_on = set(fail_on)
         self.calls = []
 
@@ -666,7 +667,7 @@ class CountingAssrt:
         self.calls.append(url)
         if url in self.fail_on:
             raise AssrtError(f"字幕下载失败：HTTP 502（{url}）")
-        return self.payload
+        return self.payloads.get(url, self.payload)
 
 
 def _two_videos(tmp_path):
@@ -700,8 +701,60 @@ def test_fetch_downloads_whole_batch_into_local_files(client, tmp_path):
     assert [item["index"] for item in body["results"]] == [1, 2]
     saved = [Path(item["path"]) for item in body["results"]]
     assert all(item.is_file() for item in saved)
-    # 文件名带上集数：整包里的 01.ass/02.ass 不会互相覆盖，也看得出是给哪一集
-    assert [item.name for item in saved] == ["assrt_01_E01.ass", "assrt_02_E02.ass"]
+    # 文件名以视频名打头（看得出是给哪一集），后面跟 8 位来源哈希
+    assert [item.name.split("__")[0] for item in saved] == ["E01", "E02"]
+    assert all(len(item.stem.split("__")[1]) == 8 for item in saved)
+
+
+def test_batch_download_keeps_episodes_apart_despite_long_common_names(client, tmp_path):
+    """回归：视频名砍到 40 字符时 S01E01 会被砍掉，六集字幕全下到同一个文件。
+
+    用户遇到的正是这一类命名：``Even.the.Student.Council.Has.Its.Holes.S01E01…``
+    前 40 个字符一模一样，旧的 ``video_stem[:40]`` 让每集都落到同一个路径。
+    """
+    prefix = "Even.the.Student.Council.Has.Its.Holes."
+    episodes = ("01", "02", "03")
+    videos = []
+    subtitles = []
+    payloads = {}
+    for ep in episodes:
+        video = tmp_path / f"{prefix}S01E{ep}.1080p.mkv"
+        video.write_bytes(b"x")
+        videos.append(str(video))
+        # 字幕文件名也共享一段长前缀（前 30 字符完全一样）
+        name = f"[VCB-Studio] Even the Student Council Has Its Holes [{ep}][Ma10p].ass"
+        url = f"http://x/{ep}.ass"
+        subtitles.append({"name": name, "url": url})
+        payloads[url] = f"[Script Info] episode {ep}".encode()
+
+    ctx = client.app.dependency_overrides[get_context]()
+    ctx._assrt = CountingAssrt(payloads=payloads)
+
+    body = client.post(
+        "/api/subtitle/fetch", json={"subtitles": subtitles, "videos": videos}
+    ).json()
+
+    assert body["ok"] is True
+    paths = [Path(item["path"]) for item in body["results"]]
+    # 三集 → 三个不同的文件
+    assert len({str(path) for path in paths}) == 3
+    for ep, path in zip(episodes, paths):
+        assert f"S01E{ep}" in path.name  # 视频名（含集数）完整保留在文件名里
+        assert path.read_bytes() == f"[Script Info] episode {ep}".encode()
+
+
+def test_write_subtitle_never_overwrites_different_content(tmp_path):
+    """最后一道保险：同名但内容不同就换个名字写，绝不「后下的顶掉先下的」。"""
+    from src.service import _write_subtitle
+
+    base = tmp_path / "E01__abc12345.ass"
+    assert _write_subtitle(base, b"one") == base
+    second = _write_subtitle(base, b"two")
+    assert second != base
+    assert base.read_bytes() == b"one"
+    assert second.read_bytes() == b"two"
+    # 同样内容再写一次 → 复用（重复下载不会越攒越多）
+    assert _write_subtitle(base, b"one") == base
 
 
 def test_two_phase_embed_downloads_each_subtitle_only_once(client, tmp_path):

@@ -6,8 +6,10 @@ JSON 的普通字典，避免把业务逻辑写进路由或 CLI 里。
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import time
 from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor
@@ -809,6 +811,19 @@ def _subtitle_dir(ctx: ServiceContext) -> Path:
     return path
 
 
+def _safe_name_part(text: str, limit: int = 110) -> str:
+    """把任意字符串变成 Windows 合法、且截断后仍然唯一的文件名片段。
+
+    超长时不是简单砍掉——砍掉的部分可能正好是集数（``...S01E01`` 在 40 字符之后
+    就会全变成同一个名字）。这里保留前段并补 8 位哈希，截断后也不会撞车。
+    """
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(text or "")).strip(" .")
+    if len(cleaned) > limit:
+        digest = hashlib.sha1(cleaned.encode("utf-8")).hexdigest()[:8]
+        cleaned = f"{cleaned[: limit - 9]}_{digest}"
+    return cleaned or "subtitle"
+
+
 def _subtitle_path(
     work_dir: Path,
     *,
@@ -817,16 +832,52 @@ def _subtitle_path(
     video_stem: str,
     sub_id: Optional[int] = None,
 ) -> Path:
-    """给下下来的字幕起一个能认出来的文件名。
+    """给下下来的字幕起一个能认出来的文件名：``<视频名>__<来源标记>.<扩展名>``。
 
-    带上视频名有两个用处：整季打包里一堆 ``01.ass`` / ``02.ass`` 不会互相覆盖，
-    而且回头翻 ``data/subtitles/`` 就知道哪一条是给哪一集的。
+    为什么用视频名打头：批量下载时，同一部番的字幕文件常常叫 ``01.ass``…``06.ass``，
+    甚至整包文件名完全相同；而每集的**视频名**一定是不同的。这样：
+
+    * ``data/subtitles/`` 里一眼看得出这条字幕是给哪一集的；
+    * 不会出现「六集下到同一个文件、最后只剩最后一集的内容」——之前把视频名砍到
+      40 字符，像 ``Even.the.Student.Council.Has.Its.Holes.S01E01...`` 这种
+      正好把 ``S01E01`` 砍掉了，六集全撞在一起。
+
+    后缀的来源标记：射手网条目用 ``#<sub_id>``，直链用 URL+文件名的 8 位哈希。
+    同一个视频搭配不同字幕不会互相覆盖；同一份字幕重复下载则还是同一个文件。
     """
     suffix = Path(name or url or "").suffix.lower()
     if suffix not in SUBTITLE_SUFFIXES:
         suffix = ".ass"
-    stamp = str(sub_id) if sub_id is not None else (Path(name or "file").stem[:30] or "url")
-    return work_dir / f"assrt_{stamp}_{video_stem[:40]}{suffix}"
+    base = _safe_name_part(video_stem or "video")
+    if sub_id is not None:
+        tag = f"#{sub_id}"
+    else:
+        tag = hashlib.sha1(f"{url or ''}|{name or ''}".encode("utf-8")).hexdigest()[:8]
+    return work_dir / f"{base}__{tag}{suffix}"
+
+
+def _write_subtitle(path: Path, content: bytes) -> Path:
+    """把字幕写到 path；**内容不同**时绝不覆盖，换个名字再写。
+
+    这是「六集字幕变成同一份」的最后一道保险：就算命名逻辑以后再出岔子，也不会
+    出现「后下的把先下的顶掉、然后六集都嵌了最后一份」。内容相同就直接复用。
+    """
+    for index in range(1, 10):
+        target = path if index == 1 else path.with_name(f"{path.stem}_{index}{path.suffix}")
+        if not target.exists():
+            target.write_bytes(content)
+            return target
+        try:
+            if target.read_bytes() == content:
+                return target
+        except OSError:
+            pass
+    # 同名同扩展名的 9 个文件内容都不一样，多半是别的问题了，用一个唯一名字兜底
+    fallback = path.with_name(
+        f"{path.stem}_{hashlib.sha1(content).hexdigest()[:8]}{path.suffix}"
+    )
+    fallback.write_bytes(content)
+    return fallback
 
 
 #: 拖拽上传的字幕要有个上限——别让人顺手把一整部片子拖进字幕目录
@@ -950,14 +1001,16 @@ def embed_subtitle(
             return {"ok": False, "error": str(exc)}
         if not content:
             return {"ok": False, "error": "下载到的字幕是空文件"}
-        subtitle_file = _subtitle_path(
-            _subtitle_dir(ctx),
-            name=name,
-            url=url,
-            video_stem=target_path.stem,
-            sub_id=sub_id,
+        subtitle_file = _write_subtitle(
+            _subtitle_path(
+                _subtitle_dir(ctx),
+                name=name,
+                url=url,
+                video_stem=target_path.stem,
+                sub_id=sub_id,
+            ),
+            content,
         )
-        subtitle_file.write_bytes(content)
         subtitle_size = len(content)
 
     if output:
@@ -1142,7 +1195,7 @@ def fetch_subtitles_batch(ctx: ServiceContext, items: Sequence[Dict[str, Any]]) 
                 entry["error"] = "下载到的是 zip 整包，不是单个字幕文件（请改用条目里列出的具体文件）"
             else:
                 path = _subtitle_path(work_dir, name=name, url=url, video_stem=Path(video).stem)
-                path.write_bytes(content)
+                path = _write_subtitle(path, content)
                 entry["ok"] = True
                 entry["path"] = str(path)
                 entry["size"] = len(content)
